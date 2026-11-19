@@ -1,86 +1,86 @@
 # anne-local
 
-L4D2 Anne 服务端的**本地化构建仓**（固定上游版本 + overlay，不维护 fork）。
+L4D2 Anne 服务端的**本地化构建仓**（固定上游版本 + base/profile 叠加，不维护 fork）。
 维护规则见 [AGENTS.md](AGENTS.md)；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
-- 上游：`fantasylidong/CompetitiveWithAnne`（Anne 包，已含 SirPlease 上游）
-- 基线：`VERSIONS.lock` 里锁定的 release tag + sha256
-- 产物：`dist/anne-local-<VERSION>.tar.gz`，根目录即 `left4dead2/`，可直接覆盖游戏树
+## 结构
 
-## 目录
-
-```
-VERSIONS.lock           # 上游 tag / 资产名 / sha256（升级只改这里）
-build.sh                # 拉包 → 打补丁 → 覆盖文件 → 删文件 → 断言 → 打包
-patches/*.patch         # 我们对上游 cfg 的差异（unified diff，-p1）
-overlay/files/          # 整文件覆盖（二进制/自研插件，目前只有 dirspawn 1.6.3）
-remove.txt              # 要删除的上游文件（MySQL 驱动、DB 插件…）
-overrides.txt           # 预留：多包合并时的同名覆盖登记
-tools/make-patches.sh   # 从"当前游戏树"重新生成 patches/（升级后重放用）
+```text
+VERSIONS.lock            # 上游 repo/tag/asset/sha256（升级只改这里）
+base/                    # 与部署环境无关的修复
+├── patches/             #   rcon 禁用（上游默认密码是公开的）
+└── overlay/files/       #   l4d2_dirspawn 1.6.3（+ 源码）
+profiles/
+├── lan/                 # 局域网/离线：关 FastDL/更新/上报/MySQL
+└── wan/                 # 广域网：目前只有 base，后续按需加
+build.sh                 # 下载→解包→base→profile→覆盖→删除→断言→打包
+tools/make-patches.sh    # 从现有游戏树重生成补丁
 .github/workflows/build.yml
 ```
+
+**默认构建不含任何部署配置**（`PROFILE=none`）：只有 base 的安全/修复项。LAN 与 WAN 的差异全部在 `profiles/` 里，不写进 base。
 
 ## 用法
 
 ```bash
-bash build.sh                    # 版本号默认 vYYYY.MM.DD
+# 只出 base（默认，不套任何部署配置）
 VERSION=v2026.11.20 bash build.sh
+
+# 局域网离线配置
+PROFILE=lan VERSION=v2026.11.20 bash build.sh
+
+# 广域网（当前等于 base）
+PROFILE=wan VERSION=v2026.11.20 bash build.sh
+
 ls dist/
 ```
 
-要求：`bash`、`curl`、`tar`、`patch`、`sha256sum`（没有 `patch` 时自动回退到 `git apply`）。
+要求：`bash`、`curl`、`tar`、`patch`、`sha256sum`（没有 `patch` 时回退 `git apply`）。
+
+Windows 上用 Git Bash：
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/path/to/anne-local && PROFILE=lan VERSION=v2026.11.20 bash build.sh'
+```
+
+> WSL 访问 GitHub release 资产会超时；本地构建请在 Windows 或 CI 里跑。
 
 ## 命名与产物标准
 
 | 项 | 规则 | 示例 |
 |---|---|---|
-| 版本号 | `vYYYY.MM.DD`，同日再构建用 `-rN` | `v2026.11.20` / `v2026.11.20-r2` |
-| 产物 | `L4D2-Anne-linux-<version>.tar.gz`（**仅 Linux**，打包时剔除 `.dll`/`.exe`） | `L4D2-Anne-linux-v2026.11.20.tar.gz` |
-| 校验 | 同名 `.sha256` | `...tar.gz.sha256` |
-| 元数据 | 同名 `.json`：版本/构建时间/git commit/上游 tag+sha/插件数 | `...tar.gz.json` |
-| Release tag | 与版本号一致 | `v2026.11.20` |
-| CI artifact | 与产物同名（去扩展名） | `L4D2-Anne-linux-v2026.11.20` |
+| 版本号 | `vYYYY.MM.DD`，同日再构建用 `-rN` | `v2026.11.20` |
+| 产物 | `L4D2-Anne-linux-[<profile>-]<version>.tar.gz`（**仅 Linux**，剔除 `.dll`/`.exe`） | `L4D2-Anne-linux-lan-v2026.11.20.tar.gz` |
+| 校验 | 同名 `.sha256` | — |
+| 元数据 | 同名 `.json`：版本/profile/构建时间/git commit/上游 tag+sha/插件数 | — |
+| Release tag | 与版本号一致，资产含 tar.gz/sha256/json | `v2026.11.20` |
+| CI artifact | 与产物同名（去扩展名） | `L4D2-Anne-linux-lan-v2026.11.20` |
 | 包内结构 | 根目录即 `left4dead2/`（drop-in 覆盖） | — |
 
-`build.sh` 会校验版本号格式，不符合直接退出（exit 2）。
+`build.sh` 会校验版本号与 profile 是否存在，不合法直接 exit 2。
 
-### Windows 上运行（Git Bash）
+## base 与 profile 的边界
 
-Git for Windows 自带 bash 5.2 / curl / tar / patch / sha256sum / git，可直接跑：
+| 内容 | 放哪 | 原因 |
+|---|---|---|
+| `rcon_password ""` | `base/` | 上游默认密码是公开字符串，任何部署都不该留 |
+| `l4d2_dirspawn` 1.6.3 | `base/` | 定时器句柄 bug，与网络环境无关 |
+| `sv_lan`、FastDL、`sv_allowdownload`、`join_autoupdate` | `profiles/lan` | LAN/WAN 取值相反 |
+| MySQL 驱动/DB 插件移除 | `profiles/lan` | WAN 可能需要数据库 |
+| 崩溃上报 / nqh / MOTD URL | `profiles/*/patches` | 各部署不同 |
+| 广告文本（`advertisements*.txt`） | `profiles/*/overlay/` | 内容类整文件覆盖 |
 
-```powershell
-& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/path/to/anne-local && VERSION=v2026.11.20 bash build.sh'
-```
+> 如果某个改动"所有部署都要"且与网络无关，才放 `base/`；否则一律进 profile。
 
-实测（2026-11-20）：Windows 上从 GitHub 拉 release 资产 77.7 MB / 13 s（sha256 校验通过），27 个补丁、7 条断言；**WSL 访问 release 资产会超时**，本地构建请在 Windows 或 CI 里跑。产物与 CI 一致，均为 Linux 包（`L4D2-Anne-linux-<version>.tar.gz`）。
-
-## 升级上游（例如 10-25 → 11-15）
+## 升级上游
 
 1. 改 `VERSIONS.lock` 的 `UPSTREAM_TAG` / `UPSTREAM_ASSET` / `UPSTREAM_ASSET_SHA256`；
-2. `bash build.sh`——补丁若因上游上下文变化失败，会停在对应 patch；
-3. 用 `tools/make-patches.sh` 对**新基线**重新生成补丁（或手工修 patch）；
-4. 断言全过后，拿 `dist/` 包在一台测试服上验一遍再上生产；
-5. 提交 `VERSIONS.lock` + 新 `patches/`。
+2. `PROFILE=lan bash build.sh`——补丁因上下文变化失败会停在对应 patch；
+3. 用 `tools/make-patches.sh` 对新基线重生成补丁（或手工修）；
+4. 断言全过 + 测试服覆盖验证后再上生产；
+5. 提交 `VERSIONS.lock` 与新 `patches/`。
 
-## 我们改了什么
+## 后期多包合并
 
-| 类别 | 内容 |
-|---|---|
-| cfg | `server.cfg` 离线块（无 FastDL/rcon、join_autoupdate 0、MOTD/新人指导保留）；`generalfixes.cfg` 关 `anne_db`；`sharedplugins.cfg` 关 `updater/savechat/rpg`；13 个模式 cfg 关 DB 插件加载；9 个 `shared_settings.cfg` 把 `join_autoupdate` 改 0 |
-| configs | `core.cfg`：崩溃上报清空、`DisableAutoUpdate yes`；`network_quality_hint.cfg`：关上报 |
-| 插件 | `l4d2_dirspawn.smx` 1.6.3（`OnMapEnd` 清 4 个定时器句柄，修 `Invalid timer handle`） |
-| 删除 | MySQL 驱动（`.so/.dll`）、`anne_db`、`rpg`、`savechat`、`updater`、`l4d_random_beam_item` |
-
-> 启动参数 `+sv_lan 1` **不在本仓**：属于部署侧（Pod/game profile）的 argv。
-
-## 后期并包
-
-新增一个包时建议：
-
-```text
-vendor/<pkg>/        # 用 git subtree 拉进来，独立更新
-overlay/files/       # 覆盖顺序：vendor 先，overlay 后
-overrides.txt        # 同名文件登记；未登记的同名冲突让 build.sh 报错
-```
-
-`build.sh` 目前只处理"上游 + overlay"；引入第二个包时按上表扩展组合顺序，并在 `VERSIONS.lock` 里为每个包各记一行来源。
+新增来源时：`vendor/<pkg>/`（建议 `git subtree`）+ `VERSIONS.lock` 增一行来源 +
+`build.sh` 组合顺序（vendor 先、base 后、profile 最后）；同名文件必须在 `overrides.txt` 登记。

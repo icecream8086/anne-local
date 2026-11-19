@@ -3,6 +3,15 @@ name: Build Linux package
 on:
   workflow_dispatch:
     inputs:
+      profile:
+        description: "部署 profile：none（仅 base）/ lan（局域网离线）/ wan（广域网）"
+        required: true
+        type: choice
+        default: lan
+        options:
+          - lan
+          - wan
+          - none
       version:
         description: "版本号，格式 vYYYY.MM.DD 或 vYYYY.MM.DD-rN（如 v2026.11.20）"
         required: true
@@ -17,18 +26,30 @@ permissions:
   contents: write
 
 concurrency:
-  group: linux-package-${{ inputs.version }}
+  group: linux-package-${{ inputs.profile }}-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   build:
-    name: Build L4D2-Anne-linux-${{ inputs.version }}
+    name: Build ${{ inputs.profile }} / ${{ inputs.version }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build Linux package
+      - name: Compute artifact name
+        id: meta
+        run: |
+          if [ "${{ inputs.profile }}" = "none" ]; then
+            name="L4D2-Anne-linux-${{ inputs.version }}"
+          else
+            name="L4D2-Anne-linux-${{ inputs.profile }}-${{ inputs.version }}"
+          fi
+          echo "artifact=$name" >> "$GITHUB_OUTPUT"
+          echo "release=L4D2 Anne Linux ${{ inputs.profile }} ${{ inputs.version }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build package
         env:
+          PROFILE: ${{ inputs.profile }}
           VERSION: ${{ inputs.version }}
         run: bash build.sh
 
@@ -40,7 +61,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: L4D2-Anne-linux-${{ inputs.version }}
+          name: ${{ steps.meta.outputs.artifact }}
           path: |
             dist/*.tar.gz
             dist/*.sha256
@@ -52,7 +73,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}
-          name: L4D2 Anne Linux ${{ inputs.version }}
+          name: ${{ steps.meta.outputs.release }}
           draft: true
           files: |
             dist/*.tar.gz

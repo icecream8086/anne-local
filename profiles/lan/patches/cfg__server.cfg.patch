@@ -1,16 +1,15 @@
 --- a/cfg/server.cfg
 +++ b/cfg/server.cfg
-@@ -5,7 +5,8 @@
+@@ -5,7 +5,7 @@
  // -----------------------------------------------------------------------
  //hostname "My Cool Server"       // Hostname bit that won't change.                              
  
--rcon_password "WowYouKnowThePasswordHere"        	 // Rcon password, used for remote access mostly.
+-// Remote rcon is disabled on this build; set it only at runtime if needed.
 +// Remote rcon is not used on this LAN box; keep it closed.
-+rcon_password ""        	 // Rcon password, used for remote access mostly.
+ rcon_password ""        	 // Rcon password, used for remote access mostly.
  sv_steamgroup "13333337"
  sv_search_key "CompetitiveRework"
- sv_steamgroup_exclusive "0"              // If set, only members of Steam group will be able to join the server when it's empty, public people will be able to join the server only if it has players.
-@@ -100,11 +101,26 @@
+@@ -101,11 +101,26 @@
  sm_cvar sv_stats 0                            // Don't need these.
  
  //download content server

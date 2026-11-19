@@ -1,5 +1,13 @@
 # 变更记录（本地构建仓）
 
+## 2026-11-20 拆分 base / profile
+
+- 默认构建（`PROFILE=none`）不再套任何部署配置：只有 base 的 `rcon_password ""` 与 `l4d2_dirspawn` 1.6.3
+- 原离线/局域网配置整体移入 `profiles/lan/`（FastDL 注释、`sv_lan 1`、`join_autoupdate 0`、关上报、移除 MySQL/DB 插件）
+- 新增 `profiles/wan/` 占位（当前只有 base，后续按广域网需求加）
+- 产物名带 profile：`L4D2-Anne-linux-lan-v2026.11.20.tar.gz`；CI 增加 `profile` 输入
+- 理由：LAN 与 WAN 配置相反，部署差异不应写成仓库默认
+
 ## 2026-11-20 标准化命名
 
 - 产物统一为 **`L4D2-Anne-linux-<version>.tar.gz`**（仅 Linux，打包剔除 `.dll`/`.exe`），附同名 `.sha256` 与 `.json` 元数据
