@@ -1,6 +1,7 @@
 # anne-local
 
 L4D2 Anne 服务端的**本地化构建仓**（方案 C：固定上游版本 + overlay，不维护 fork）。
+维护规则见 [AGENTS.md](AGENTS.md)；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 - 上游：`fantasylidong/CompetitiveWithAnne`（Anne 包，已含 SirPlease 上游）
 - 基线：`VERSIONS.lock` 里锁定的 release tag + sha256
