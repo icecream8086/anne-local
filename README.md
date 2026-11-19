@@ -27,7 +27,17 @@ VERSION=v1.0.0 bash build.sh     # 指定版本号
 ls dist/
 ```
 
-要求：`bash`、`curl`、`tar`、`patch`、`sha256sum`。
+要求：`bash`、`curl`、`tar`、`patch`、`sha256sum`（没有 `patch` 时自动回退到 `git apply`）。
+
+### Windows 上运行（Git Bash）
+
+Git for Windows 自带 bash 5.2 / curl / tar / patch / sha256sum / git，可直接跑：
+
+```powershell
+& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/path/to/anne-local && VERSION=v1.0.0 bash build.sh'
+```
+
+实测（2026-11-20）：Windows 上从 GitHub 拉 release 资产 77.7 MB / 13 s（sha256 校验通过），27 个补丁、6 条断言、产 75 MB 包；注意 **WSL 访问 release 资产会超时**，本地构建请在 Windows 或 CI 里跑。
 
 ## 升级上游（例如 10-25 → 11-15）
 
