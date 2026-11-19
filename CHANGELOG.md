@@ -12,4 +12,6 @@
   - `addons/sourcemod/configs/core.cfg`：崩溃上报 URL 清空、`DisableAutoUpdate yes`
   - `cfg/sourcemod/network_quality_hint.cfg`：上报关闭、URL 清空
 - 覆盖文件：`l4d2_dirspawn.smx` 1.6.3（+ 源码），修 `OnMapEnd` 定时器句柄
+- 覆盖文件补充：`plugins/optional/AnneHappy/l4d2_dirspawn.smx` 同步为 1.6.3，`build.sh` 增加"根副本与 optional 副本 sha 一致"断言
+- 仓库文档：新增 `AGENTS.md`（维护规则），README 增加链接
 - 删除：MySQL 驱动、`anne_db`、`rpg`、`savechat`、`updater`、`l4d_random_beam_item`

@@ -85,6 +85,13 @@ bad() { echo "    FAIL $1"; fail=1; }
 [ -f "$BUILD/left4dead2/addons/sourcemod/plugins/l4d2_dirspawn.smx" ] \
   && ok "dirspawn 1.6.3 已覆盖" || bad "dirspawn smx 缺失"
 
+root_ds="$BUILD/left4dead2/addons/sourcemod/plugins/l4d2_dirspawn.smx"
+opt_ds="$BUILD/left4dead2/addons/sourcemod/plugins/optional/AnneHappy/l4d2_dirspawn.smx"
+if [ -f "$opt_ds" ]; then
+  [ "$(sha256sum "$root_ds" | cut -d' ' -f1)" = "$(sha256sum "$opt_ds" | cut -d' ' -f1)" ] \
+    && ok "dirspawn optional 副本与根副本一致" || bad "dirspawn optional 副本与根副本不一致"
+fi
+
 cnt=$(grep -rl 'confogl_addcvar join_autoupdate 0' "$BUILD/left4dead2/cfg/cfgogl" 2>/dev/null | wc -l)
 [ "$cnt" -ge 9 ] && ok "join_autoupdate=0 覆盖 $cnt 个模式" || bad "join_autoupdate=0 只覆盖 $cnt 个模式"
 
