@@ -1,0 +1,11 @@
+--- a/cfg/cfgogl/coop/shared_plugins.cfg
++++ b/cfg/cfgogl/coop/shared_plugins.cfg
+@@ -114,7 +114,7 @@
+ sm plugins load extend/Survivor_Legs.smx
+ sm plugins load extend/gnome.smx
+ sm plugins load extend/HitStatistics.smx
+-sm plugins load extend/l4d_random_beam_item.smx
++//sm plugins load extend/l4d_random_beam_item.smx
+ sm plugins load extend/show_mic.smx
+ sm plugins load optional/l4d2_melee_spawn_control.smx
+ sm plugins load optional/MeleeInTheSafeRoom.smx

@@ -1,0 +1,41 @@
+--- a/cfg/server.cfg
++++ b/cfg/server.cfg
+@@ -5,7 +5,8 @@
+ // -----------------------------------------------------------------------
+ //hostname "My Cool Server"       // Hostname bit that won't change.                              
+ 
+-rcon_password "WowYouKnowThePasswordHere"        	 // Rcon password, used for remote access mostly.
++// Remote rcon is not used on this LAN box; keep it closed.
++rcon_password ""        	 // Rcon password, used for remote access mostly.
+ sv_steamgroup "13333337"
+ sv_search_key "CompetitiveRework"
+ sv_steamgroup_exclusive "0"              // If set, only members of Steam group will be able to join the server when it's empty, public people will be able to join the server only if it has players.
+@@ -100,11 +101,26 @@
+ sm_cvar sv_stats 0                            // Don't need these.
+ 
+ //download content server
+-sv_downloadurl "http://anne.trygek.com/fastdl/left4dead2"
++// External FastDL removed (LAN clients download directly from the server).
++//sv_downloadurl "http://anne.trygek.com/fastdl/left4dead2"
+ sm_cvar sv_allowupload 0
+-sm_cvar sv_allowdownload 0
++sm_cvar sv_allowdownload 1
+ sm_cvar sb_all_bot_game  1
+ sm_cvar decalfrequency 1.0
+ 
+ // stupid ai forgive melee
+ sm_cvar sb_max_team_melee_weapons 0
++
++// -----------------------------------------------------------------------
++// Offline LAN profile (2026-11-19).
++// Removed: external FastDL, remote rcon, plugin/gamedata auto-update,
++//          MySQL-backed plugins, crash upload and network-quality reporting.
++// Kept: MOTD + new-player guide (client-side public pages).
++// Keep comments ASCII: the engine executes non-ASCII comment fragments.
++// -----------------------------------------------------------------------
++sv_lan 1
++sm_cvar join_autoupdate 0
++sm_cvar sm_cfgmotd_url "http://anne.trygek.com/l4d2/"
++sm_cvar sm_new_player_guide_url "http://anne.trygek.com/l4d2/guide"
++sm_cvar sm_cfgip_url ""
++sm_cvar sm_donate_url ""

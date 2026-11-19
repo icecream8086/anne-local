@@ -1,0 +1,11 @@
+--- a/cfg/cfgogl/alone/confogl_plugins.cfg
++++ b/cfg/cfgogl/alone/confogl_plugins.cfg
+@@ -58,7 +58,7 @@
+ // Alone General Plugins
+ //-------------------------------------------
+ sm plugins unload optional/l4d2_hunter_no_deadstops.smx
+-sm plugins load extend/rpg.smx
++//sm plugins load extend/rpg.smx
+ sm plugins load extend/punch_angle.smx
+ sm plugins load optional/AnneHappy/l4d_CreateSurvivorBot.smx
+ sm plugins load optional/AnneHappy/server.smx

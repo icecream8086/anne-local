@@ -1,0 +1,11 @@
+--- a/cfg/generalfixes.cfg
++++ b/cfg/generalfixes.cfg
+@@ -1,6 +1,7 @@
+ // Requirements
+ // anne_db 必须最先加载：其余数据库插件通过它共享 MySQL 连接，未加载时各自回退到原生连接。
+-sm plugins load extend/anne_db.smx
++// MySQL hub disabled (offline instance).
++//sm plugins load extend/anne_db.smx
+ sm plugins load left4dhooks.smx
+ // l4d2lib 也由 SourceMod 启动自动加载，保证无数据库版 RPG 的依赖就绪。
+ sm plugins load l4d2lib.smx

@@ -1,0 +1,24 @@
+--- a/cfg/sourcemod/network_quality_hint.cfg
++++ b/cfg/sourcemod/network_quality_hint.cfg
+@@ -23,7 +23,7 @@
+ nqh_warn_cooldown "180.0"
+ 
+ // 服务器 IP 页面，玩家在这里复制对应服务器的 connect 命令。
+-nqh_ip_page_url "https://anne.trygek.com/ip.php"
++nqh_ip_page_url ""
+ 
+ // 玩家进服多少秒后显示一次当前网络状态。0 关闭。
+ nqh_intro_delay "25.0"
+@@ -31,10 +31,10 @@
+ // 是否启用可选的玩家连接质量上报。插件源码默认关闭。
+ // 本仓库给网站白名单内的 Anne 游戏服显式打开；上报需要 SteamWorks（1.1.5+）。
+ // 未进白名单的社区服请改回 "0"。本地 ping/loss/choke 检测不依赖上报。
+-nqh_report_enable "1"
++nqh_report_enable "0"
+ 
+ // NewAnneWeb 玩家连接质量采集接口。
+-nqh_report_url "http://anne.trygek.com/api/player/connection_quality.php"
++nqh_report_url ""
+ 
+ // 正常连接每 10 分钟汇总一次；异常、恢复和断线会即时上报。
+ nqh_report_interval "600"

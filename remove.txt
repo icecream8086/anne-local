@@ -1,0 +1,9 @@
+# 删除清单（相对 left4dead2/）
+# 只删"上游包里有、我们离线环境不要"的文件；不存在时 build.sh 只提示不报错。
+addons/sourcemod/extensions/dbi.mysql.ext.so
+addons/sourcemod/extensions/dbi.mysql.ext.dll
+addons/sourcemod/plugins/extend/anne_db.smx
+addons/sourcemod/plugins/extend/rpg.smx
+addons/sourcemod/plugins/extend/savechat.smx
+addons/sourcemod/plugins/extend/updater.smx
+addons/sourcemod/plugins/extend/l4d_random_beam_item.smx

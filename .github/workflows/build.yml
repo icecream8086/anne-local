@@ -1,0 +1,48 @@
+name: Build anne-local
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version / tag (e.g. v2026.11.20)"
+        required: true
+        type: string
+      publish:
+        description: "Publish a draft GitHub Release"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: anne-local-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Build overlay
+        env:
+          VERSION: ${{ inputs.version }}
+        run: bash build.sh
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: anne-local-${{ inputs.version }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+
+      - name: Publish draft release
+        if: ${{ inputs.publish }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.version }}
+          name: ${{ inputs.version }}
+          draft: true
+          files: dist/*.tar.gz

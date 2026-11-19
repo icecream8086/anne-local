@@ -1,0 +1,5 @@
+# 上游来源锁定：升级只改这里
+UPSTREAM_REPO="fantasylidong/CompetitiveWithAnne"
+UPSTREAM_TAG="CompetitiveWithAnne-stable-release-2026-10-25"
+UPSTREAM_ASSET="CompetitiveWithAnne-2026-10-25-nomysql.tar.gz"
+UPSTREAM_ASSET_SHA256="342d3b921d3b16c7d1fdaf723893096f41508d55fc82973c6cf0e9671b25eff6"

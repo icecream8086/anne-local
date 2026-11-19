@@ -1,0 +1,11 @@
+--- a/cfg/cfgogl/coop/confogl_plugins.cfg
++++ b/cfg/cfgogl/coop/confogl_plugins.cfg
+@@ -26,7 +26,7 @@
+ //-------------------------------------------
+ // AnneCoop General Plugins
+ //-------------------------------------------
+-sm plugins load extend/rpg.smx
++//sm plugins load extend/rpg.smx
+ sm plugins load extend/punch_angle.smx
+ sm plugins load optional/AnneHappy/l4d_CreateSurvivorBot.smx
+ sm plugins load optional/AnneHappy/server.smx
