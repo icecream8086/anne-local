@@ -15,7 +15,12 @@ cd "$ROOT"
 source VERSIONS.lock
 : "${UPSTREAM_REPO:?}" "${UPSTREAM_TAG:?}" "${UPSTREAM_ASSET:?}"
 
-VERSION="${VERSION:-$(date +%Y%m%d-%H%M)}"
+VERSION="${VERSION:-v$(date +%Y.%m.%d)}"
+if ! printf '%s' "$VERSION" | grep -Eq '^v[0-9]{4}\.[0-9]{2}\.[0-9]{2}(-r[0-9]+)?$'; then
+  echo "ERROR: VERSION 必须形如 v2026.11.20 或 v2026.11.20-r2（当前: $VERSION）"
+  exit 2
+fi
+PKG="L4D2-Anne-linux-${VERSION}"
 CACHE=".cache"
 BUILD="build"
 DIST="dist"
@@ -112,9 +117,29 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-# ---------- 7. 打包 ----------
-out="$DIST/anne-local-${VERSION}.tar.gz"
-tar -czf "$out" -C "$BUILD" .
+# ---------- 7. 打包（仅 Linux：剔除 .dll/.exe） ----------
+out="$DIST/$PKG.tar.gz"
+tar -czf "$out" --exclude='*.dll' --exclude='*.exe' -C "$BUILD" .
 plugins=$(find "$BUILD/left4dead2/addons/sourcemod/plugins" -name '*.smx' | wc -l)
+sha256sum "$out" | awk '{print $1"  '$PKG'.tar.gz"}' > "$out.sha256"
+
+commit="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+built_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+cat > "$DIST/$PKG.json" <<EOF
+{
+  "package": "$PKG.tar.gz",
+  "version": "$VERSION",
+  "built_at": "$built_at",
+  "git_commit": "$commit",
+  "upstream_repo": "$UPSTREAM_REPO",
+  "upstream_tag": "$UPSTREAM_TAG",
+  "upstream_asset": "$UPSTREAM_ASSET",
+  "upstream_asset_sha256": "${UPSTREAM_ASSET_SHA256:-}",
+  "plugins": $plugins
+}
+EOF
+
 echo "==> done: $out"
 echo "    size=$(du -h "$out" | cut -f1)  plugins=$plugins"
+echo "    sha256: $(cut -d' ' -f1 "$out.sha256")"
+echo "    meta:   $DIST/$PKG.json"

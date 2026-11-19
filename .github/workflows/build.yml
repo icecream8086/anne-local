@@ -1,14 +1,14 @@
-name: Build anne-local
+name: Build Linux package
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version / tag (e.g. v2026.11.20)"
+        description: "版本号，格式 vYYYY.MM.DD 或 vYYYY.MM.DD-rN（如 v2026.11.20）"
         required: true
         type: string
       publish:
-        description: "Publish a draft GitHub Release"
+        description: "创建 draft Release（默认只出 artifact）"
         required: false
         type: boolean
         default: false
@@ -17,25 +17,34 @@ permissions:
   contents: write
 
 concurrency:
-  group: anne-local-build
+  group: linux-package-${{ inputs.version }}
   cancel-in-progress: false
 
 jobs:
   build:
+    name: Build L4D2-Anne-linux-${{ inputs.version }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Build overlay
+      - name: Build Linux package
         env:
           VERSION: ${{ inputs.version }}
         run: bash build.sh
 
+      - name: Show package metadata
+        run: |
+          cat dist/*.json
+          cat dist/*.sha256
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: anne-local-${{ inputs.version }}
-          path: dist/*.tar.gz
+          name: L4D2-Anne-linux-${{ inputs.version }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*.json
           if-no-files-found: error
 
       - name: Publish draft release
@@ -43,6 +52,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ inputs.version }}
-          name: ${{ inputs.version }}
+          name: L4D2 Anne Linux ${{ inputs.version }}
           draft: true
-          files: dist/*.tar.gz
+          files: |
+            dist/*.tar.gz
+            dist/*.sha256
+            dist/*.json

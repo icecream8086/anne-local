@@ -1,6 +1,6 @@
 # anne-local
 
-L4D2 Anne 服务端的**本地化构建仓**（方案 C：固定上游版本 + overlay，不维护 fork）。
+L4D2 Anne 服务端的**本地化构建仓**（固定上游版本 + overlay，不维护 fork）。
 维护规则见 [AGENTS.md](AGENTS.md)；变更记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 - 上游：`fantasylidong/CompetitiveWithAnne`（Anne 包，已含 SirPlease 上游）
@@ -23,22 +23,36 @@ tools/make-patches.sh   # 从"当前游戏树"重新生成 patches/（升级后�
 ## 用法
 
 ```bash
-bash build.sh                    # 版本号默认 日期-时间
-VERSION=v1.0.0 bash build.sh     # 指定版本号
+bash build.sh                    # 版本号默认 vYYYY.MM.DD
+VERSION=v2026.11.20 bash build.sh
 ls dist/
 ```
 
 要求：`bash`、`curl`、`tar`、`patch`、`sha256sum`（没有 `patch` 时自动回退到 `git apply`）。
+
+## 命名与产物标准
+
+| 项 | 规则 | 示例 |
+|---|---|---|
+| 版本号 | `vYYYY.MM.DD`，同日再构建用 `-rN` | `v2026.11.20` / `v2026.11.20-r2` |
+| 产物 | `L4D2-Anne-linux-<version>.tar.gz`（**仅 Linux**，打包时剔除 `.dll`/`.exe`） | `L4D2-Anne-linux-v2026.11.20.tar.gz` |
+| 校验 | 同名 `.sha256` | `...tar.gz.sha256` |
+| 元数据 | 同名 `.json`：版本/构建时间/git commit/上游 tag+sha/插件数 | `...tar.gz.json` |
+| Release tag | 与版本号一致 | `v2026.11.20` |
+| CI artifact | 与产物同名（去扩展名） | `L4D2-Anne-linux-v2026.11.20` |
+| 包内结构 | 根目录即 `left4dead2/`（drop-in 覆盖） | — |
+
+`build.sh` 会校验版本号格式，不符合直接退出（exit 2）。
 
 ### Windows 上运行（Git Bash）
 
 Git for Windows 自带 bash 5.2 / curl / tar / patch / sha256sum / git，可直接跑：
 
 ```powershell
-& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/path/to/anne-local && VERSION=v1.0.0 bash build.sh'
+& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/path/to/anne-local && VERSION=v2026.11.20 bash build.sh'
 ```
 
-实测（2026-11-20）：Windows 上从 GitHub 拉 release 资产 77.7 MB / 13 s（sha256 校验通过），27 个补丁、6 条断言、产 75 MB 包；注意 **WSL 访问 release 资产会超时**，本地构建请在 Windows 或 CI 里跑。
+实测（2026-11-20）：Windows 上从 GitHub 拉 release 资产 77.7 MB / 13 s（sha256 校验通过），27 个补丁、7 条断言；**WSL 访问 release 资产会超时**，本地构建请在 Windows 或 CI 里跑。产物与 CI 一致，均为 Linux 包（`L4D2-Anne-linux-<version>.tar.gz`）。
 
 ## 升级上游（例如 10-25 → 11-15）
 

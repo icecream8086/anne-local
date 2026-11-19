@@ -1,8 +1,14 @@
 # 变更记录（本地构建仓）
 
+## 2026-11-20 标准化命名
+
+- 产物统一为 **`L4D2-Anne-linux-<version>.tar.gz`**（仅 Linux，打包剔除 `.dll`/`.exe`），附同名 `.sha256` 与 `.json` 元数据
+- 版本号统一为 `vYYYY.MM.DD` / `vYYYY.MM.DD-rN`，`build.sh` 校验格式
+- CI workflow 更名 **Build Linux package**，artifact 与产物同名；Release 资产含 tar.gz/sha256/json
+
 ## 2026-11-20 初始化（基线 2026-10-25）
 
-- 建立方案 C：`VERSIONS.lock` 锁上游 `CompetitiveWithAnne-stable-release-2026-10-25`（nomysql，sha256 `342d3b92…`）
+- 建立构建仓（固定上游版本 + overlay）：`VERSIONS.lock` 锁上游 `CompetitiveWithAnne-stable-release-2026-10-25`（nomysql，sha256 `342d3b92…`）
 - 27 个 cfg 补丁：
   - `cfg/server.cfg`：关 FastDL / 关 rcon / `sv_allowdownload 1` / 离线块（`join_autoupdate 0`、MOTD+新人指导保留、IP/赞助清空）
   - `cfg/generalfixes.cfg`：注释 `extend/anne_db.smx`

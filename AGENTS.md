@@ -1,6 +1,6 @@
 # AGENTS.md —— anne-local 维护须知
 
-> 本仓是 **L4D2 Anne 服务端的本地构建仓（方案 C）**：固定上游 release + 我们的补丁/覆盖/删除清单，构建出可部署的游戏树 overlay。
+> 本仓是 **L4D2 Anne 服务端的本地构建仓**：固定上游 release + 我们的补丁/覆盖/删除清单，构建出可部署的游戏树 overlay。
 > 不是 fork：**不维护上游分支、不做 `git merge upstream`**；升级 = 改 `VERSIONS.lock` 一行 + 重放补丁。
 > 回复语言：中文。
 
@@ -22,13 +22,15 @@
 
 ```bash
 # Windows（Git Bash）——本机 WSL 访问 GitHub release 资产会超时
-& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/.../anne-local && VERSION=vX.Y.Z bash build.sh'
+& 'C:\Program Files\Git\bin\bash.exe' -lc 'cd /c/.../anne-local && VERSION=v2026.11.20 bash build.sh'
 # Linux / CI
-VERSION=vX.Y.Z bash build.sh
+VERSION=v2026.11.20 bash build.sh
 ```
 
-- **断言必须全过**才能交付：dirspawn 存在、9 个模式 `join_autoupdate=0`、`anne_db`/`rpg`/`savechat`/`updater` 未加载、崩溃上报 URL 为空、MySQL 驱动不存在。
-- 产物 `dist/anne-local-<VERSION>.tar.gz` 解包后应与线上树对比：`cfg/server.cfg` 逐字节一致、自动加载插件数 147、`l4d2_dirspawn.smx` sha 以 `800d776d` 开头。
+- 版本号格式：`vYYYY.MM.DD` 或 `vYYYY.MM.DD-rN`，不符合 `build.sh` 直接 exit 2。
+- 产物：`dist/L4D2-Anne-linux-<version>.tar.gz` + `.sha256` + `.json`（仅 Linux，剔除 `.dll`/`.exe`）。
+- **断言必须全过**才能交付：dirspawn 存在且根/optional 副本 sha 一致、9 个模式 `join_autoupdate=0`、`anne_db`/`rpg`/`savechat`/`updater` 未加载、崩溃上报 URL 为空、MySQL 驱动不存在。
+- 产物 `dist/L4D2-Anne-linux-<VERSION>.tar.gz` 解包后应与线上树对比：`cfg/server.cfg` 逐字节一致、自动加载插件数 147、`l4d2_dirspawn.smx` sha 以 `800d776d` 开头。
 - 改动配置后，至少在一台测试服覆盖验证再上生产。
 
 ## 3. 修改纪律（重要）
@@ -44,8 +46,8 @@ VERSION=vX.Y.Z bash build.sh
 
 ## 4. 发布
 
-- GitHub Actions → **Build anne-local** → Run workflow：
-  - `version`（必填，如 `v2026.11.20`）
+- GitHub Actions → **Build Linux package** → Run workflow：
+  - `version`（必填，格式 `vYYYY.MM.DD`）
   - `publish=true` 才会创建 **draft** release；default 只上传 artifact。
 - draft 不会自动打 tag，需在 Releases 页面点 Publish。
 
