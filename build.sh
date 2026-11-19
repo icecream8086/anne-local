@@ -107,15 +107,20 @@ bad() { echo "    FAIL $1"; fail=1; }
 
 root_ds="$BUILD/left4dead2/addons/sourcemod/plugins/l4d2_dirspawn.smx"
 opt_ds="$BUILD/left4dead2/addons/sourcemod/plugins/optional/AnneHappy/l4d2_dirspawn.smx"
-[ -f "$root_ds" ] && ok "dirspawn 1.6.3 已覆盖" || bad "dirspawn smx 缺失"
-if [ -f "$opt_ds" ]; then
-  [ "$(sha256sum "$root_ds" | cut -d' ' -f1)" = "$(sha256sum "$opt_ds" | cut -d' ' -f1)" ] \
-    && ok "dirspawn optional 副本与根副本一致" || bad "dirspawn optional 副本与根副本不一致"
+if [ -f "$root_ds" ]; then
+  ok "dirspawn 已覆盖（profile overlay）"
+  if [ -f "$opt_ds" ]; then
+    [ "$(sha256sum "$root_ds" | cut -d' ' -f1)" = "$(sha256sum "$opt_ds" | cut -d' ' -f1)" ] \
+      && ok "dirspawn optional 副本与根副本一致" || bad "dirspawn optional 副本与根副本不一致"
+  fi
+else
+  echo "    (无 dirspawn overlay，保留上游版本)"
 fi
 grep -qE '^rcon_password ""' "$BUILD/left4dead2/cfg/server.cfg" \
   && ok "rcon 已禁用（空密码）" || bad "rcon 密码未清空"
 
 if [ "$PROFILE" = "lan" ]; then
+  [ -f "$root_ds" ] && ok "dirspawn 1.6.3 存在" || bad "dirspawn overlay 缺失"
   cnt=$(grep -rl 'confogl_addcvar join_autoupdate 0' "$BUILD/left4dead2/cfg/cfgogl" 2>/dev/null | wc -l)
   [ "$cnt" -ge 9 ] && ok "join_autoupdate=0 覆盖 $cnt 个模式" || bad "join_autoupdate=0 只覆盖 $cnt 个模式"
   grep -qE '^sm plugins load extend/anne_db' "$BUILD/left4dead2/cfg/generalfixes.cfg" \

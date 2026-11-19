@@ -1,5 +1,12 @@
 # 变更记录（本地构建仓）
 
+## 2026-11-20 收窄到"只改高危密码"
+
+- 仓库只保留 `base/patches/cfg__server.cfg.patch`（`rcon_password ""`）；其余全部移出仓库
+- `profiles/`（LAN 离线配置、dirspawn 1.6.3、MySQL/DB 移除等）改为**本地目录 + gitignore**，不上传、不参与 CI
+- CI 去掉 `profile` 输入，只构建 base；产物名回到 `L4D2-Anne-linux-<version>.tar.gz`
+- 理由：LAN/WAN 配置因环境而异，传上去没有意义；仓库只承担"上游默认密码是公开的"这一必须修复
+
 ## 2026-11-20 拆分 base / profile
 
 - 默认构建（`PROFILE=none`）不再套任何部署配置：只有 base 的 `rcon_password ""` 与 `l4d2_dirspawn` 1.6.3
