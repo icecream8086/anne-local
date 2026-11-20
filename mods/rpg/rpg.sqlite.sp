@@ -1,0 +1,3879 @@
+#pragma newdecls required
+/**/
+#pragma semicolon 1
+#include <sourcemod>
+#include <anne_db>
+#include <sdktools>
+#include <sdkhooks>
+#include <colors>
+#include <rpg>
+#include <admin>
+#undef REQUIRE_PLUGIN
+#include <infected_control>
+#include <l4dstats>
+#include <hextags>
+#include <l4d_hats>
+#include <godframecontrol>
+#include <readyup>
+#define PLUGIN_VERSION "2.1.0"
+#define MAX_LINE_WIDTH 64
+#define DB_CONF_NAME  "rpg"
+#define RPG_DB_LOAD_RETRY_DELAY 2.0
+#define RPG_AUTH_LOAD_RETRY_DELAY 1.0
+#define RPG_AUTH_LOAD_RETRY_MAX 10
+#define RPG_HAT_FIRST -2
+
+// 进行 MySQL 连接相关变量
+Handle db = INVALID_HANDLE;
+int g_iDbLoadRetryCount[MAXPLAYERS + 1];
+int g_iAuthLoadRetryCount[MAXPLAYERS + 1];
+int g_iDbLoadUserId[MAXPLAYERS + 1];
+bool g_bDbLoadInFlight[MAXPLAYERS + 1];
+bool g_bAuthLoadRetryPending[MAXPLAYERS + 1];
+bool g_bLateLoad = false;
+bool g_bGuidePreferenceColumnAvailable = false;
+bool g_bHatPrefColumnAvailable = false;
+bool g_bSqliteDriver = false;
+enum struct PlayerStruct{
+	int ClientPoints;
+	int ClientBlood;
+	int ClientMelee;
+	int ClientHat;
+	int ClientRecoil;
+	int GlowType;
+	int SkinType;
+	int AnneGuidePrompt;
+	int HatPrefs;
+	bool ClientFirstBuy;
+	bool Check;
+	bool CanBuy;
+	bool DataLoaded;
+	CustomTags tags;
+}
+PlayerStruct player[MAXPLAYERS + 1];
+bool valid = true, UseBuy = false;
+bool IsStart=false;
+bool IsAllowBigGun = false;
+bool g_bEnableGlow = true;
+bool  g_bAllowUseB = true;
+bool g_bPendingGlowRetry[MAXPLAYERS + 1];
+bool g_bHatDirty[MAXPLAYERS + 1];
+bool g_bHatPrefDirty[MAXPLAYERS + 1];
+bool g_bApplyingHatPrefs[MAXPLAYERS + 1];
+bool g_bHatPrefsReady[MAXPLAYERS + 1];
+bool g_bHatPrefMigrationPending[MAXPLAYERS + 1];
+bool g_bHatTypeMysqlReady[MAXPLAYERS + 1];
+bool g_bHatTypeCookieMigrationPending[MAXPLAYERS + 1];
+bool g_bHatRowCreatePending[MAXPLAYERS + 1];
+bool g_bPendingCosmeticRetry[MAXPLAYERS + 1];
+ConVar g_hAllowUseB = null;
+ConVar GaoJiRenJi, AllowBigGun, g_cShopEnable, g_hEnableGlow, g_hInfectedLimit = null;
+// === Admin Anti-Kick ===
+ConVar g_hAntiKickEnable;
+ConVar g_hAntiKickBlockVote;
+ConVar g_hAntiKickBlockCmdKick;
+ConVar g_hAntiKickMinImmunity;   // 0=只要有任意管理员标识就保护；>0=要求免疫等级>=此值才保护
+ConVar g_hAntiKickEqualBlock;    // 同级免疫是否禁止互踢（默认禁用互踢）
+bool g_bHitSoundAvailable = false,g_bGodFrameSystemAvailable = false, g_bHatSystemAvailable = false, g_bHextagsSystemAvailable = false, g_bl4dstatsSystemAvailable = false, g_bMysqlSystemAvailable = false, g_bReadyUpSystemAvailable = false, g_bInfectedControlAvailable = false, g_bpunchangelSystemAvailable= false, g_bDamageShowHudAvailable = false, g_bBeamItemAvailable = false;
+bool g_bPendingCustomTagApply[MAXPLAYERS + 1];
+//new lastpoints[MAXPLAYERS + 1];
+
+//枚举变量,修改武器消耗积分在此。
+enum costweapon
+{
+	CostAmmo			=0,
+	//手枪
+	CostP220		    = 50,
+	CostMagnum		    = 50,
+	//冲锋枪
+	CostUzi 		    = 50,
+	CostSilenced 	    = 50,
+	CostMP5 		    = 100,
+	//步枪
+	CostM16 		    = 200,
+	CostAK47   		    = 200,
+	CostSCAR 		    = 200,
+	CostSG552 		    = 200,
+	//连狙
+	CostHunting 	    = 200,
+	CostMilitary        = 200,
+	//栓狙
+	CostAWP 		    = 500,
+	CostScout 		    = 300,
+	//连喷
+	CostAuto 		    = 200,
+	CostSPAS 		    = 200,
+	//单喷
+	CostChromeShotgun   = 50,
+	CostPumpShotgun     = 50,
+	//特殊武器
+	CostGrenadeLuanch   = 500,
+	CostM60 			= 500,
+	//医疗物品
+	CostFirstAidKit		= 500,
+	//药品
+	CostAdren 			= 300,
+	CostPills 			= 400,
+	//升级附件
+	CostGascan			= 200,
+	CostGnome			= 500,
+}
+enum TEAM
+{
+    Team_Spectator = 1,
+    Team_Survivor = 2,
+    Team_Infected = 3
+};
+ConVar ReturnBlood;
+//插件开始
+public Plugin myinfo =
+{
+	name = "商店插件",
+	author = "东",
+	description = "购买游戏道具,幸存者轮廓，帽子保存,生还者皮肤颜色",
+	version = PLUGIN_VERSION,
+	url = "http://sb.trygek.com"
+}
+
+Handle IsValid, IsUseBuy;
+//Startup
+// rpg.sp —— 在 AskPluginLoad2 里注册 Native（和你现有的三个一起）
+public APLRes AskPluginLoad2(Handle myself, bool late, char[] error, int err_max)
+{
+    g_bLateLoad = late;
+    RegPluginLibrary("rpg");
+    IsValid = CreateGlobalForward("OnValidValveChange", ET_Ignore, Param_Cell);
+    IsUseBuy = CreateGlobalForward("OnBuyValveChange", ET_Ignore, Param_Cell);
+
+    CreateNative("L4D_RPG_GetValue",        Native_GetValue);
+    CreateNative("L4D_RPG_GetGlobalValue",  Native_GetGlobalValue);
+    CreateNative("L4D_RPG_SetGlobalValue",  Native_SetGlobalValue);
+    CreateNative("L4D_RPG_SetValue",        Native_SetValue); // ★ 新增
+	CreateNative("L4D_RPG_GetAnneGuidePrompt", Native_GetAnneGuidePrompt);
+	CreateNative("L4D_RPG_SetAnneGuidePrompt", Native_SetAnneGuidePrompt);
+    return APLRes_Success;
+}
+
+
+
+// rpg.sp —— 在合适位置加上实现（紧跟你已有的 Native_* 后面即可）
+public any Native_SetValue(Handle plugin, int numParams)
+{
+    int client = GetNativeCell(1);
+    int option = GetNativeCell(2);
+    int value  = GetNativeCell(3);
+
+    if (client < 1 || client > MaxClients)
+        return ThrowNativeError(SP_ERROR_NATIVE, "Invalid client index (%d)", client);
+    if (!IsClientConnected(client))
+        return ThrowNativeError(SP_ERROR_NATIVE, "Client %d is not connected", client);
+    if (!player[client].DataLoaded)
+        return -1;
+
+    switch (view_as<TARGET_VALUE_INDEX>(option))
+    {
+        case INDEX_RECOIL:
+        {
+            player[client].ClientRecoil = value ? 1 : 0;
+            ClientSaveToFileSave(client);   // 你已有的落库函数：UPDATE RPG ... RECOIL=...
+            return 1;
+        }
+    }
+    return -1;
+}
+
+public any Native_GetValue(Handle plugin, int numParams)
+{
+	int client = GetNativeCell(1);
+	int option = GetNativeCell(2);
+	if (client < 1 || client > MaxClients)
+	{
+		return ThrowNativeError(SP_ERROR_NATIVE, "Invalid client index (%d)", client);
+	}
+	if (!IsClientConnected(client))
+	{
+		return ThrowNativeError(SP_ERROR_NATIVE, "Client %d is not connected", client);
+	}
+	if (!player[client].DataLoaded)
+	{
+		switch (view_as<TARGET_VALUE_INDEX>(option))
+		{
+			case INDEX_BLOOD, INDEX_MELEE, INDEX_HAT, INDEX_GLOW, INDEX_SKIN, INDEX_RECOIL:
+				return -1;
+		}
+	}
+	//Debug_Print("GetClientTargetNum Native called");
+	switch( view_as<TARGET_VALUE_INDEX>(option) )
+	{
+		case INDEX_POINTS:			return player[client].ClientPoints;
+		case INDEX_BLOOD:			return player[client].ClientBlood;
+		case INDEX_MELEE:			return player[client].ClientMelee;
+		case INDEX_HAT:				return player[client].ClientHat;
+		case INDEX_GLOW:			return player[client].GlowType;
+		case INDEX_SKIN:			return player[client].SkinType;
+		case INDEX_FIRSTBUY:		return player[client].ClientFirstBuy;
+		case INDEX_RECOIL:			return player[client].ClientRecoil;
+	}
+	return -1;
+}
+
+public any Native_GetAnneGuidePrompt(Handle plugin, int numParams)
+{
+	int client = GetNativeCell(1);
+	if (client < 1 || client > MaxClients || !IsClientConnected(client))
+	{
+		return -1;
+	}
+
+	if (!player[client].DataLoaded)
+	{
+		return -1;
+	}
+
+	return player[client].AnneGuidePrompt;
+}
+
+public any Native_SetAnneGuidePrompt(Handle plugin, int numParams)
+{
+	int client = GetNativeCell(1);
+	bool enabled = GetNativeCell(2) != 0;
+	return SetAnneGuidePromptPreference(client, enabled);
+}
+
+bool SetAnneGuidePromptPreference(int client, bool enabled)
+{
+	if (!IsValidClient(client) || IsFakeClient(client)
+		|| !g_bMysqlSystemAvailable || !g_bGuidePreferenceColumnAvailable
+		|| !player[client].DataLoaded)
+	{
+		return false;
+	}
+
+	player[client].AnneGuidePrompt = enabled ? 1 : 0;
+	ClientSaveToFileSave(client);
+	return true;
+}
+
+public any Native_GetGlobalValue(Handle plugin, int numParams)
+{
+	int option = GetNativeCell(1);
+	//Debug_Print("GetClientTargetNum Native called");
+	switch( view_as<TARGET_VALUE_INDEX>(option) )
+	{
+		case INDEX_VALID:			return valid;
+		case INDEX_USEBUY:			return UseBuy;
+	}
+	return -1;
+}
+
+static bool SetRoundValid(bool newValue)
+{
+	if (valid == newValue)
+	{
+		return false;
+	}
+
+	valid = newValue;
+	Call_StartForward(IsValid);
+	Call_PushCell(valid);
+	Call_Finish();
+	return true;
+}
+
+static bool SetRoundUseBuy(bool newValue)
+{
+	if (UseBuy == newValue)
+	{
+		return false;
+	}
+
+	UseBuy = newValue;
+	Call_StartForward(IsUseBuy);
+	Call_PushCell(UseBuy);
+	Call_Finish();
+	return true;
+}
+
+public any Native_SetGlobalValue(Handle plugin, int numParams)
+{
+	int option = GetNativeCell(1);
+	int value  = GetNativeCell(2);
+	//Debug_Print("GetClientTargetNum Native called");
+	switch( view_as<TARGET_VALUE_INDEX>(option) )
+	{
+		case INDEX_VALID:
+		{
+			SetRoundValid(view_as<bool>(value));
+			return 1;
+		}
+		case INDEX_USEBUY:
+		{
+			SetRoundUseBuy(view_as<bool>(value));
+			return 1;
+		}
+	}
+	return -1;
+}
+
+
+static int GetClientImmunityLevel(int client)
+{
+    AdminId adm = GetUserAdmin(client);
+    if (adm == INVALID_ADMIN_ID) return 0;
+    return GetAdminImmunityLevel(adm);
+}
+
+static bool HasAnyAdminFlag(int client)
+{
+    return (GetUserAdmin(client) != INVALID_ADMIN_ID) || (GetUserFlagBits(client) != 0);
+}
+
+
+// 目标是否受“防踢”保护
+static bool IsAdminProtected(int target)
+{
+    if (!IsClientInGame(target)) return false;
+    if (!HasAnyAdminFlag(target)) return false;
+
+    int minImm = g_hAntiKickMinImmunity != null ? g_hAntiKickMinImmunity.IntValue : 0;
+    if (minImm <= 0) return true;                       // 0：只要有任意管理员身份就保护
+    return GetClientImmunityLevel(target) >= minImm;    // 否则：需达到阈值
+}
+
+static bool HasRootGlowAccess(int client)
+{
+	return GetClientImmunityLevel(client) >= 100 || CheckCommandAccess(client, "", ADMFLAG_PASSWORD);
+}
+
+static bool HasBasicGlowAccess(int client)
+{
+	if (!g_bl4dstatsSystemAvailable)
+		return true;
+
+	return l4dstats_IsTopPlayer(client, 20)
+		|| (l4dstats_IsQuarterTopPlayer(client, 5) && l4dstats_GetClientQuarterScore(client) > 100000)
+		|| CheckCommandAccess(client, "", ADMFLAG_SLAY);
+}
+
+static bool TryGetRpgSteamId(int client, char[] steamid, int maxlen)
+{
+	if (maxlen > 0)
+		steamid[0] = '\0';
+
+	if (client < 1 || client > MaxClients || !IsClientConnected(client) || IsFakeClient(client))
+		return false;
+
+	if (!GetClientAuthId(client, AuthId_Steam2, steamid, maxlen, true))
+	{
+		if (maxlen > 0)
+			steamid[0] = '\0';
+		return false;
+	}
+
+	if (steamid[0] == '\0'
+		|| StrEqual(steamid, "BOT", false)
+		|| StrEqual(steamid, "STEAM_ID_PENDING", false)
+		|| StrEqual(steamid, "STEAM_ID_STOP_IGNORING_RETVALS", false)
+		|| StrEqual(steamid, "STEAM_ID_LAN", false))
+	{
+		steamid[0] = '\0';
+		return false;
+	}
+
+	return true;
+}
+
+static void ResetRpgClient(int client)
+{
+	if (client < 1 || client > MAXPLAYERS)
+		return;
+
+	player[client].ClientPoints = 500;
+	player[client].ClientBlood = 0;
+	player[client].ClientMelee = 0;
+	player[client].ClientHat = 0;
+	player[client].ClientRecoil = 1;
+	player[client].GlowType = 0;
+	player[client].SkinType = 0;
+	player[client].AnneGuidePrompt = 1;
+	player[client].HatPrefs = HATS_PREF_DEFAULT;
+	player[client].ClientFirstBuy = !IsStart;
+	player[client].Check = false;
+	player[client].CanBuy = true;
+	player[client].DataLoaded = false;
+	player[client].tags.ChatTag = NULL_STRING;
+
+	g_iDbLoadRetryCount[client] = 0;
+	g_iAuthLoadRetryCount[client] = 0;
+	g_iDbLoadUserId[client] = 0;
+	g_bDbLoadInFlight[client] = false;
+	g_bAuthLoadRetryPending[client] = false;
+	g_bPendingGlowRetry[client] = false;
+	g_bHatDirty[client] = false;
+	g_bHatPrefDirty[client] = false;
+	g_bApplyingHatPrefs[client] = false;
+	g_bHatPrefsReady[client] = false;
+	g_bHatPrefMigrationPending[client] = false;
+	g_bHatTypeMysqlReady[client] = false;
+	g_bHatTypeCookieMigrationPending[client] = false;
+	g_bHatRowCreatePending[client] = false;
+	g_bPendingCosmeticRetry[client] = false;
+	g_bPendingCustomTagApply[client] = false;
+}
+
+static bool IsSameRpgLoadQuery(int client, int userid)
+{
+	return client > 0 && client <= MAXPLAYERS && userid > 0
+		&& g_bDbLoadInFlight[client] && g_iDbLoadUserId[client] == userid;
+}
+
+static bool BeginRpgClientLoad(int client)
+{
+	if (!g_bMysqlSystemAvailable || !IsValidClient(client) || IsFakeClient(client) || player[client].DataLoaded)
+		return false;
+
+	int userid = GetClientUserId(client);
+	if (userid <= 0)
+		return false;
+	if (g_bDbLoadInFlight[client] && g_iDbLoadUserId[client] == userid)
+		return false;
+
+	char steamid[64];
+	if (!TryGetRpgSteamId(client, steamid, sizeof(steamid)))
+		return false;
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return false;
+
+	char query[768];
+	if (g_bGuidePreferenceColumnAvailable && g_bHatPrefColumnAvailable)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "SELECT MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,CHATTAG,ANNE_GUIDE_PROMPT,HAT_ENABLED,HAT_VIEW_FIRST,HAT_VIEW_THIRD,HAT_SHOW_OTHERS FROM RPG WHERE steamid = '%s'", steamid);
+	}
+	else if (g_bGuidePreferenceColumnAvailable)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "SELECT MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,CHATTAG,ANNE_GUIDE_PROMPT FROM RPG WHERE steamid = '%s'", steamid);
+	}
+	else if (g_bHatPrefColumnAvailable)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "SELECT MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,CHATTAG,HAT_ENABLED,HAT_VIEW_FIRST,HAT_VIEW_THIRD,HAT_SHOW_OTHERS FROM RPG WHERE steamid = '%s'", steamid);
+	}
+	else
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "SELECT MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,CHATTAG FROM RPG WHERE steamid = '%s'", steamid);
+	}
+
+	g_bDbLoadInFlight[client] = true;
+	g_iDbLoadUserId[client] = userid;
+	SQL_TQuery(db, ShowMelee, query, userid);
+	return true;
+}
+
+static void ScheduleRpgAuthLoadRetry(int client)
+{
+	if (client < 1 || client > MAXPLAYERS || !g_bMysqlSystemAvailable || player[client].DataLoaded)
+		return;
+	if (g_bDbLoadInFlight[client] || g_bAuthLoadRetryPending[client])
+		return;
+	if (g_iAuthLoadRetryCount[client] >= RPG_AUTH_LOAD_RETRY_MAX)
+		return;
+
+	int userid = GetClientUserId(client);
+	if (userid <= 0)
+		return;
+
+	g_iAuthLoadRetryCount[client]++;
+	g_bAuthLoadRetryPending[client] = true;
+	CreateTimer(RPG_AUTH_LOAD_RETRY_DELAY, Timer_RetryAuthLoad, userid, TIMER_FLAG_NO_MAPCHANGE);
+}
+
+static void RpgStartHumanClient(int client)
+{
+	if (client < 1 || client > MaxClients || !IsClientConnected(client) || IsFakeClient(client))
+		return;
+
+	player[client].ClientFirstBuy = !IsStart;
+	if (!g_bMysqlSystemAvailable)
+	{
+		player[client].DataLoaded = true;
+		return;
+	}
+
+	player[client].DataLoaded = false;
+	if (!BeginRpgClientLoad(client))
+		ScheduleRpgAuthLoadRetry(client);
+}
+
+static void RpgScheduleJoinTimers(int client)
+{
+	if (!IsClientInGame(client) || IsFakeClient(client))
+		return;
+
+	CreateTimer(3.0, CheckPlayer, GetClientUserId(client));
+	CreateTimer(10.0, SetClientTag, GetClientUserId(client));
+}
+
+static bool ShouldPreserveRpgLoad(int client)
+{
+	if (client < 1 || client > MAXPLAYERS || !IsClientConnected(client))
+		return false;
+
+	int userid = GetClientUserId(client);
+	return userid > 0 && g_bDbLoadInFlight[client] && g_iDbLoadUserId[client] == userid;
+}
+
+static void RpgInitOnlineClients()
+{
+	for (int client = 1; client <= MaxClients; client++)
+	{
+		if (!IsClientConnected(client) || IsFakeClient(client))
+			continue;
+
+		ResetRpgClient(client);
+		RpgStartHumanClient(client);
+		RpgScheduleJoinTimers(client);
+	}
+}
+
+public Action Timer_RetryAuthLoad(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (client > 0 && client <= MAXPLAYERS)
+		g_bAuthLoadRetryPending[client] = false;
+
+	if (client <= 0 || !IsClientConnected(client) || IsFakeClient(client))
+		return Plugin_Stop;
+	if (player[client].DataLoaded || !g_bMysqlSystemAvailable)
+		return Plugin_Stop;
+	if (g_bDbLoadInFlight[client] && g_iDbLoadUserId[client] == userid)
+		return Plugin_Stop;
+	if (!BeginRpgClientLoad(client))
+		ScheduleRpgAuthLoadRetry(client);
+	return Plugin_Stop;
+}
+
+static bool IsCustomGlowOwner(int client, int glowType)
+{
+	char steamid[32];
+	if (!TryGetRpgSteamId(client, steamid, sizeof(steamid)))
+		return false;
+
+	switch (glowType)
+	{
+		case 17:
+			return StrContains(steamid, "632322128", false) != -1 || StrContains(steamid, "121430603", false) != -1;
+		case 18:
+			return StrContains(steamid, "511614235", false) != -1 || StrContains(steamid, "121430603", false) != -1;
+		case 19:
+			return StrContains(steamid, "888190443", false) != -1 || StrContains(steamid, "121430603", false) != -1;
+	}
+
+	return false;
+}
+
+static bool CanClientUseGlow(int client, int glowType)
+{
+	if (glowType == 0)
+		return true;
+	if (!IsValidClient(client) || glowType < 0 || glowType > 19)
+		return false;
+	if (!g_bl4dstatsSystemAvailable)
+		return glowType < 17 || IsCustomGlowOwner(client, glowType);
+
+	if (glowType >= 17)
+		return HasBasicGlowAccess(client) && IsCustomGlowOwner(client, glowType);
+	if (glowType < 15)
+		return HasBasicGlowAccess(client);
+	if (glowType == 15)
+		return l4dstats_IsTopPlayer(client, 3) || HasRootGlowAccess(client);
+	if (glowType == 16)
+		return l4dstats_IsTopPlayer(client, 1) || HasRootGlowAccess(client);
+
+	return false;
+}
+
+static bool IsGlowRankDataReady(int client)
+{
+	if (!g_bl4dstatsSystemAvailable)
+		return true;
+
+	return l4dstats_IsTopPlayerCacheReady() != 0 && l4dstats_IsClientScoreReady(client) != 0;
+}
+
+static void ScheduleCosmeticRetry(int client)
+{
+	if (g_bPendingCosmeticRetry[client])
+		return;
+
+	g_bPendingCosmeticRetry[client] = true;
+	CreateTimer(3.0, Timer_RetryGlowApply, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+}
+
+static bool CanClientUseHat(int client)
+{
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return false;
+
+	ConVar hatsMenu = FindConVar("l4d_hats_menu");
+	char flags[32];
+	int menuFlags = ADMFLAG_KICK;
+	if (hatsMenu != null)
+	{
+		hatsMenu.GetString(flags, sizeof(flags));
+		TrimString(flags);
+		if (flags[0] == '\0')
+			return true;
+		menuFlags = ReadFlagString(flags);
+	}
+
+	int userFlags = GetUserFlagBits(client);
+	if ((userFlags & ADMFLAG_ROOT) || (menuFlags && (userFlags & menuFlags)))
+		return true;
+
+	if (!g_bl4dstatsSystemAvailable)
+		return true;
+
+	return l4dstats_IsTopPlayer(client, 100) != 0;
+}
+
+static int StoredHatToIndex(int stored)
+{
+	if (stored == RPG_HAT_FIRST)
+		return 0;
+	if (stored > 0)
+		return stored;
+	return -1;
+}
+
+static int HatIndexToStored(int index)
+{
+	if (index < 0)
+		return 0;
+	if (index == 0)
+		return RPG_HAT_FIRST;
+	return index;
+}
+
+static int HatsGetPrefsSafe(int client)
+{
+	if (g_bHatSystemAvailable && GetFeatureStatus(FeatureType_Native, "Hats_GetClientPrefs") == FeatureStatus_Available)
+		return Hats_GetClientPrefs(client);
+	return HATS_PREF_DEFAULT;
+}
+
+static bool HatsArePrefsReadySafe(int client)
+{
+	return g_bHatSystemAvailable
+		&& GetFeatureStatus(FeatureType_Native, "Hats_AreClientPrefsReady") == FeatureStatus_Available
+		&& Hats_AreClientPrefsReady(client);
+}
+
+static void HatsUnpackPrefs(int flags, int &enabled, int &viewFirst, int &viewThird, int &showOthers)
+{
+	enabled = (flags & HATS_PREF_ENABLED) ? 1 : 0;
+	viewFirst = (flags & HATS_PREF_VIEW_FIRST) ? 1 : 0;
+	viewThird = (flags & HATS_PREF_VIEW_THIRD) ? 1 : 0;
+	showOthers = (flags & HATS_PREF_SHOW_OTHERS) ? 1 : 0;
+}
+
+static int HatsPackPrefValues(int enabled, int viewFirst, int viewThird, int showOthers)
+{
+	int flags = 0;
+	if (enabled)
+		flags |= HATS_PREF_ENABLED;
+	if (viewFirst)
+		flags |= HATS_PREF_VIEW_FIRST;
+	if (viewThird)
+		flags |= HATS_PREF_VIEW_THIRD;
+	if (showOthers)
+		flags |= HATS_PREF_SHOW_OTHERS;
+	return flags;
+}
+
+static void ApplyClientHatPrefs(int client)
+{
+	if (!g_bHatPrefsReady[client])
+		return;
+	if (!g_bHatSystemAvailable || !g_bMysqlSystemAvailable || !g_bHatPrefColumnAvailable)
+		return;
+	if (GetFeatureStatus(FeatureType_Native, "Hats_SetClientPrefs") != FeatureStatus_Available)
+		return;
+
+	g_bApplyingHatPrefs[client] = true;
+	Hats_SetClientPrefs(client, player[client].HatPrefs);
+	g_bApplyingHatPrefs[client] = false;
+}
+
+static void ApplyClientHat(int client)
+{
+	if (!g_bHatSystemAvailable || !g_bMysqlSystemAvailable || !player[client].DataLoaded || !g_bHatTypeMysqlReady[client])
+		return;
+
+	ApplyClientHatPrefs(client);
+
+	int index = StoredHatToIndex(player[client].ClientHat);
+	if (index < 0)
+	{
+		if (GetFeatureStatus(FeatureType_Native, "Hats_SetClientHat") == FeatureStatus_Available)
+			Hats_SetClientHat(client, -1);
+		return;
+	}
+
+	if (!CanClientUseHat(client))
+	{
+		if (!IsGlowRankDataReady(client))
+		{
+			ScheduleCosmeticRetry(client);
+			return;
+		}
+
+		player[client].ClientHat = 0;
+		if (GetFeatureStatus(FeatureType_Native, "Hats_SetClientHat") == FeatureStatus_Available)
+			Hats_SetClientHat(client, -1);
+		ClientSaveToFileSave(client);
+		return;
+	}
+
+	if (GetFeatureStatus(FeatureType_Native, "Hats_SetClientHat") == FeatureStatus_Available)
+		Hats_SetClientHat(client, index);
+	else
+		ServerCommand("sm_hatclient #%d %d", GetClientUserId(client), index);
+}
+
+static bool CanClientUseSkin(int client, int skinType)
+{
+	if (skinType == 0)
+		return true;
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return false;
+	if (!g_bl4dstatsSystemAvailable)
+		return true;
+
+	if (skinType < 15 || skinType >= 17)
+		return l4dstats_IsTopPlayer(client, 50) != 0 || CheckCommandAccess(client, "", ADMFLAG_SLAY);
+
+	return l4dstats_IsTopPlayer(client, 5) != 0
+		|| GetClientImmunityLevel(client) >= 100
+		|| CheckCommandAccess(client, "", ADMFLAG_PASSWORD);
+}
+
+static void ApplyClientSkin(int client)
+{
+	if (!player[client].SkinType)
+		return;
+
+	if (!CanClientUseSkin(client, player[client].SkinType))
+	{
+		if (!IsGlowRankDataReady(client))
+		{
+			ScheduleCosmeticRetry(client);
+			return;
+		}
+
+		player[client].SkinType = 0;
+		DisableSkin(client);
+		ClientSaveToFileSave(client);
+		return;
+	}
+
+	GetSkin(client, player[client].SkinType, false);
+}
+
+static void ApplyClientCosmetics(int client)
+{
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return;
+	if (GetClientTeam(client) != 2 || !IsPlayerAlive(client))
+		return;
+
+	if (player[client].GlowType && g_bEnableGlow && ValidateClientGlow(client, true, true))
+		GetAura(client, player[client].GlowType, false, false);
+
+	ApplyClientHat(client);
+	ApplyClientSkin(client);
+}
+
+static void ClearClientGlow(int client, bool persist, bool notify = false)
+{
+	if (!IsValidClient(client))
+		return;
+
+	player[client].GlowType = 0;
+	DisableGlow(client);
+	g_bPendingGlowRetry[client] = false;
+
+	if (persist)
+		ClientSaveToFileSave(client);
+
+	if (notify)
+		CPrintToChat(client, "%t", "RPG_ProfilePermissionExpiredAutomaticallyClosed");
+}
+
+static bool ValidateClientGlow(int client, bool persist, bool notify = false)
+{
+	if (player[client].GlowType == 0 || CanClientUseGlow(client, player[client].GlowType))
+	{
+		g_bPendingGlowRetry[client] = false;
+		return true;
+	}
+
+	if (!IsGlowRankDataReady(client))
+	{
+		ScheduleCosmeticRetry(client);
+		return false;
+	}
+
+	ClearClientGlow(client, persist, notify);
+	return false;
+}
+
+public Action Timer_RetryGlowApply(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!client || !IsClientInGame(client))
+		return Plugin_Stop;
+
+	g_bPendingGlowRetry[client] = false;
+	g_bPendingCosmeticRetry[client] = false;
+	ApplyClientCosmetics(client);
+
+	return Plugin_Stop;
+}
+
+// 解析 callvote/ sm_kick 里的目标参数，支持 "#userid" 或 精确姓名；
+// 如果精确不唯一，则返回 0（避免误判）
+static int ResolveSingleTarget(const char[] arg)
+{
+    if (arg[0] == '#' && strlen(arg) >= 2)
+    {
+        int uid = StringToInt(arg[1]);
+        int cl = GetClientOfUserId(uid);
+        return (cl > 0 && IsClientInGame(cl)) ? cl : 0;
+    }
+
+    // 先尝试精确匹配
+    for (int i=1; i<=MaxClients; i++)
+    {
+        if (!IsClientInGame(i)) continue;
+        char name[64];
+        GetClientName(i, name, sizeof(name));
+        if (StrEqual(name, arg, false))
+            return i;
+    }
+
+    // 再尝试“唯一”子串匹配（仅当唯一命中才返回）
+    int hit = 0, cnt = 0;
+    for (int i=1; i<=MaxClients; i++)
+    {
+        if (!IsClientInGame(i)) continue;
+        char name[64];
+        GetClientName(i, name, sizeof(name));
+        if (StrContains(name, arg, false) != -1)
+        {
+            hit = i; cnt++;
+            if (cnt > 1) break;
+        }
+    }
+    return (cnt == 1) ? hit : 0;
+}
+
+
+public bool IsSurvivor(int client)
+{
+    return (IsValidClient(client) && GetClientTeam(client) == view_as<int>(Team_Survivor));
+}
+public bool IsValidClient(int client)
+{
+    return (client > 0 && client <= MaxClients && IsClientConnected(client) && IsClientInGame(client));
+}
+
+public void OnAllPluginsLoaded()
+{
+    g_bGodFrameSystemAvailable   = LibraryExists("l4d2_godframes_control_merge");
+    g_bHatSystemAvailable        = LibraryExists("l4d_hats");
+    g_bl4dstatsSystemAvailable   = LibraryExists("l4d_stats");
+    g_bHextagsSystemAvailable    = LibraryExists("hextags");
+    g_bReadyUpSystemAvailable    = LibraryExists("readyup");
+	g_bpunchangelSystemAvailable = LibraryExists("punch_angle");
+	g_bHitSoundAvailable = LibraryExists("l4d2_hitsound");
+
+    // 只在 infected_control 库存在时再去找 l4d_infected_limit
+    g_bInfectedControlAvailable  = LibraryExists("infected_control");
+    if (g_bInfectedControlAvailable)
+    {
+        g_hInfectedLimit = FindConVar("l4d_infected_limit");
+        if (g_hInfectedLimit != null)
+        {
+            g_hInfectedLimit.AddChangeHook(ConVarChanged_Cvars);
+        }
+    }
+	g_bDamageShowHudAvailable = LibraryExists("damage_show");
+	g_bBeamItemAvailable = LibraryExists("l4d_random_beam_item");
+}
+
+public void OnLibraryAdded(const char[] name)
+{
+    if (StrEqual(name, "l4d2_godframes_control_merge")) { g_bGodFrameSystemAvailable = true; }
+    else if (StrEqual(name, "l4d_hats"))
+	{
+		g_bHatSystemAvailable = true;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (player[i].DataLoaded)
+				ApplyClientHat(i);
+		}
+	}
+    else if (StrEqual(name, "l4d_stats")) { g_bl4dstatsSystemAvailable = true; }
+    else if (StrEqual(name, "hextags"))
+	{
+		g_bHextagsSystemAvailable = true;
+		for (int i = 1; i <= MaxClients; i++)
+		{
+			if (g_bPendingCustomTagApply[i])
+				ApplyCustomTagIfReady(i);
+		}
+	}
+    else if (StrEqual(name, "readyup")) { g_bReadyUpSystemAvailable = true; }
+    else if (StrEqual(name, "infected_control"))
+    {
+        g_bInfectedControlAvailable = true;
+        g_hInfectedLimit = FindConVar("l4d_infected_limit");
+        if (g_hInfectedLimit != null)
+        {
+            g_hInfectedLimit.AddChangeHook(ConVarChanged_Cvars);
+        }
+    }
+	else if (StrEqual(name, "punch_angle")) { g_bpunchangelSystemAvailable = true; }
+	else if (StrEqual(name, "damage_show")) { g_bDamageShowHudAvailable = true; }
+	else if (StrEqual(name, "l4d2_hitsound")) { g_bHitSoundAvailable = true; }
+	else if (StrEqual(name, "l4d_random_beam_item")) { g_bBeamItemAvailable = true; }
+}
+
+public void OnLibraryRemoved(const char[] name)
+{
+    if (StrEqual(name, "l4d2_godframes_control_merge")) { g_bGodFrameSystemAvailable = false; }
+    else if (StrEqual(name, "l4d_hats")) { g_bHatSystemAvailable = false; }
+    else if (StrEqual(name, "l4d_stats")) { g_bl4dstatsSystemAvailable = false; }
+    else if (StrEqual(name, "hextags")) { g_bHextagsSystemAvailable = false; }
+    else if (StrEqual(name, "readyup")) { g_bReadyUpSystemAvailable = false; }
+    else if (StrEqual(name, "infected_control"))
+    {
+        g_bInfectedControlAvailable = false;
+        if (g_hInfectedLimit != null)
+        {
+            g_hInfectedLimit.RemoveChangeHook(ConVarChanged_Cvars);
+            g_hInfectedLimit = null;
+        }
+    }
+	else if (StrEqual(name, "punch_angle")) { g_bpunchangelSystemAvailable = false; }
+	else if (StrEqual(name, "damage_show")) { g_bDamageShowHudAvailable = false; }
+	else if (StrEqual(name, "l4d2_hitsound")) { g_bHitSoundAvailable = false; }
+	else if (StrEqual(name, "l4d_random_beam_item")) { g_bBeamItemAvailable = false; }
+}
+
+
+//god frame send forward implement
+public void L4D2_GodFrameRenderChange(int client){
+	if(g_bGodFrameSystemAvailable && player[client].SkinType){
+		GetSkin(client, player[client].SkinType, false);
+	}
+}
+
+
+public void L4D_OnHatLoadSave(int client, int index)
+{
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return;
+
+	player[client].ClientHat = HatIndexToStored(index);
+	g_bHatTypeCookieMigrationPending[client] = false;
+	if (!player[client].DataLoaded)
+	{
+		g_bHatDirty[client] = true;
+		return;
+	}
+
+	ClientHatTypeSaveToFile(client);
+}
+
+public void L4D_OnHatPrefsChanged(int client, int flags)
+{
+	if (!IsValidClient(client) || IsFakeClient(client) || g_bApplyingHatPrefs[client])
+		return;
+
+	player[client].HatPrefs = flags;
+	g_bHatPrefsReady[client] = g_bHatPrefColumnAvailable;
+	g_bHatPrefMigrationPending[client] = false;
+	if (!player[client].DataLoaded)
+	{
+		g_bHatPrefDirty[client] = true;
+		return;
+	}
+
+	ClientHatPrefsSaveToFile(client);
+}
+
+public void L4D_OnHatPrefsReady(int client, int flags)
+{
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return;
+
+	if (g_bHatTypeCookieMigrationPending[client])
+	{
+		player[client].ClientHat = HatIndexToStored(Hats_GetClientHat(client));
+		g_bHatTypeCookieMigrationPending[client] = false;
+		if (player[client].DataLoaded && g_bHatTypeMysqlReady[client])
+		{
+			ClientHatTypeSaveToFile(client);
+			ApplyClientHat(client);
+		}
+	}
+
+	if (!g_bHatPrefMigrationPending[client])
+		return;
+
+	if (!g_bHatPrefDirty[client])
+		player[client].HatPrefs = flags;
+
+	g_bHatPrefMigrationPending[client] = false;
+	g_bHatPrefsReady[client] = g_bHatPrefColumnAvailable;
+	if (player[client].DataLoaded && g_bHatPrefsReady[client])
+	{
+		g_bHatPrefDirty[client] = false;
+		ApplyClientHatPrefs(client);
+		CreateTimer(0.2, Timer_SaveReadyHatPrefs, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+	}
+}
+
+public Action Timer_SaveReadyHatPrefs(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!client || !IsClientInGame(client) || !g_bHatPrefsReady[client])
+		return Plugin_Stop;
+
+	ClientHatPrefsSaveToFile(client);
+	return Plugin_Stop;
+}
+
+//载入事件
+public void OnMapStart()
+{
+	for(int i=1;i<MaxClients;i++){
+		if(IsSurvivor(i))
+			{
+				player[i].ClientFirstBuy=true;
+				player[i].CanBuy=true;
+				player[i].ClientPoints=500;
+			}
+		else
+			player[i].ClientPoints=0;
+		IsStart=false;
+		valid=true;
+		UseBuy = false;
+	}
+}
+
+public void  OnPluginStart()
+{
+	LoadTranslations("rpg.phrases");
+//	LoadTranslations("menu_shop.phrases.txt");
+	HookEvent("round_start", 	EventRoundStart, 				EventHookMode_Pre);
+	HookEvent("player_death", 	EventReturnBlood, 				EventHookMode_Pre);
+	HookEvent("player_spawn", 	Event_Player_Spawn, 			EventHookMode_Pre);
+	HookEvent("mission_lost", 	EventMissionLost , 				EventHookMode_Post);
+	HookEvent("player_afk", 	Event_PlayerAFK, 				EventHookMode_Pre);
+	HookEvent("player_team", 	Event_PlayerDisconnectOrAFK, 	EventHookMode_Post);
+	//HookEvent("player_team", 	Event_PlayerTeam, EventHookMode_Pre);
+	g_cShopEnable =  CreateConVar("shop_enable", "0", "是否打开商店购买", FCVAR_NONE, true, 0.0, true, 1.0);
+	AllowBigGun = CreateConVar("rpg_allow_biggun", "0", "商店是否允许购买大枪", FCVAR_NONE, true, 0.0, true, 1.0);
+	g_hEnableGlow = CreateConVar("rpg_allow_glow", "1", "商店是否打开轮廓", FCVAR_NONE, true, 0.0, true, 1.0);
+	// --- Admin Anti-Kick: ConVars ---
+	g_hAntiKickEnable       = CreateConVar("rpg_antikick_enable", "1", "是否启用管理员防踢（投票/命令）", FCVAR_NONE, true, 0.0, true, 1.0);
+	g_hAntiKickBlockVote    = CreateConVar("rpg_antikick_block_votekick", "1", "禁止对受保护管理员发起投票踢", FCVAR_NONE, true, 0.0, true, 1.0);
+	g_hAntiKickBlockCmdKick = CreateConVar("rpg_antikick_block_cmdkick", "1", "低级/同级管理员是否禁止用 sm_kick 踢受保护管理员", FCVAR_NONE, true, 0.0, true, 1.0);
+	g_hAntiKickMinImmunity  = CreateConVar("rpg_antikick_min_immunity", "0", "受保护阈值：管理员免疫等级>=此值即保护；0=任意管理员都保护", FCVAR_NONE, true, 0.0, true, 100.0);
+	g_hAntiKickEqualBlock   = CreateConVar("rpg_antikick_equal_block", "1", "同级免疫是否禁止互踢（仅对 sm_kick 生效）", FCVAR_NONE, true, 0.0, true, 1.0);
+	g_hAllowUseB = CreateConVar(
+    "rpg_allow_UseB", "1",
+    "是否允许消费B数（>0 价格的商品）。1=允许；0=禁止（仅允许 0B 商品）",
+    FCVAR_NONE, true, 0.0, true, 1.0
+	);
+	g_bAllowUseB = g_hAllowUseB.BoolValue;
+	g_hAllowUseB.AddChangeHook(ConVarChanged_Cvars);
+
+	// --- Admin Anti-Kick: 监听命令 ---
+	AddCommandListener(OnCallVote, "callvote");   // 阻止对管理员的投票踢
+	AddCommandListener(OnSmKick,  "sm_kick");     // 限制同级/低级管理员踢更高级（或同级）
+	if(FindConVar("sb_fix_enabled"))
+		GaoJiRenJi=FindConVar("sb_fix_enabled");
+	if (LibraryExists("infected_control"))
+	{
+		g_bInfectedControlAvailable = true;
+		g_hInfectedLimit = FindConVar("l4d_infected_limit");
+		if (g_hInfectedLimit != null)
+		{
+			g_hInfectedLimit.AddChangeHook(ConVarChanged_Cvars);
+		}
+	}
+	AllowBigGun.AddChangeHook(ConVarChanged_Cvars);
+	g_hEnableGlow.AddChangeHook(ConVarChanged_Cvars);
+	if(GaoJiRenJi != null)
+		GaoJiRenJi.AddChangeHook(ConVarChanged_Cvars);
+	ReturnBlood = CreateConVar("ReturnBlood", "0", "回血模式");
+	RegConsoleCmd("sm_buy", BuyMenu, "打开购买菜单(只能在游戏中)");
+	RegConsoleCmd("sm_ammo", BuyAmmo, "快速买子弹");
+	RegConsoleCmd("sm_pen", BuyPen, "快速随机买一把单喷");
+	RegConsoleCmd("sm_chr", BuyChr, "快速买一把二代单喷");
+	RegConsoleCmd("sm_pum", BuyPum, "快速买一把一代单喷");
+	RegConsoleCmd("sm_smg", BuySmg, "快速买smg");
+	RegConsoleCmd("sm_uzi", BuyUzi, "快速买uzi");
+	RegConsoleCmd("sm_pill", BuyPill, "快速买药");
+	RegConsoleCmd("sm_setch", SetCH, "设置自定义称号");
+	RegConsoleCmd("sm_unsetch", UnSetCH, "设置自定义称号");
+	RegConsoleCmd("sm_applytags", ApplyTags, "佩戴自定义称号");
+	RegConsoleCmd("sm_rpg", BuyMenu, "打开购买菜单(只能在游戏中)");
+	RegAdminCmd("sm_rpginfo", RpgInfo, ADMFLAG_ROOT ,"输出rpg人物信息");
+	RegAdminCmd("sm_rpgglowdebug", RpgGlowDebug, ADMFLAG_ROOT, "输出RPG轮廓权限调试信息");
+	//RegAdminCmd("sm_skintest", Tryskin, ADMFLAG_ROOT ,"测试皮肤rgb值");
+	//RegAdminCmd("sm_aruatest", Tryskin, ADMFLAG_ROOT ,"测试轮廓rgb值");
+	for (int i = 1; i <= MAXPLAYERS; i++)
+		ResetRpgClient(i);
+}
+
+public void OnMapEnd()
+{
+	// 数据库连接保持跨地图运行。
+}
+
+public void OnPluginEnd()
+{
+	CloseDbConnection();
+}
+
+public void OnConfigsExecuted()
+{
+	// Init MySQL connections
+	if (!ConnectDB())
+	{
+		g_bMysqlSystemAvailable = false;
+		//SetFailState("Connecting to database failed. Read error log for further details.");
+	}
+	else
+	{
+		g_bMysqlSystemAvailable = true;
+	}
+
+	if (g_bLateLoad)
+	{
+		RpgInitOnlineClients();
+		g_bLateLoad = false;
+	}
+}
+
+// *********************
+//		获取Cvar值
+// *********************
+void ConVarChanged_Cvars(ConVar convar, const char[] oldValue, const char[] newValue)
+{
+	if (convar == AllowBigGun)
+		IsAllowBigGun = GetConVarBool(AllowBigGun);
+	else if (convar == g_hEnableGlow)
+		g_bEnableGlow = GetConVarBool(g_hEnableGlow);
+
+	// 先单独处理 rpg_allow_UseB（不依赖 infected_control）
+	if (convar == g_hAllowUseB)
+	{
+		g_bAllowUseB = g_hAllowUseB.BoolValue;
+		CPrintToChatAll("%t", "RPG_Message", g_bAllowUseB ? "允许使用B数购买商品" : "已禁止使用B数购买（仅允许 0B 商品）");
+		return;
+	}
+	if (!g_bInfectedControlAvailable || g_hInfectedLimit == null)
+	{
+		// 没有 infected_control，就当这局不计有效（保持你原始语义）
+		SetRoundValid(false);
+		return;
+	}
+
+	if (IsStart)
+	{
+		if(valid)CPrintToChatAll("%t", "RPG_RANKVariablesRequiredDetermineExtra");
+		SetRoundValid(false);
+	}
+}
+
+public void Event_PlayerDisconnectOrAFK( Event hEvent, const char[] sName, bool bDontBroadcast )
+{
+	int client = GetClientOfUserId( hEvent.GetInt( "userid" ));
+	int team = hEvent.GetInt( "team" );
+	bool disconnect = hEvent.GetBool( "disconnect" );
+	if(IsValidClient(client) && (team == 3 || disconnect)){
+		DisableGlow(client);
+	}
+	if (client > 0 && disconnect)
+		ResetRpgClient(client);
+
+}
+
+public void Event_PlayerAFK( Event hEvent, const char[] sName, bool bDontBroadcast )
+{
+	DisableGlow( GetClientOfUserId( hEvent.GetInt("userid")) );
+}
+
+public void Event_Player_Spawn(Event hEvent, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId( hEvent.GetInt( "userid" ));
+	if( client && IsClientInGame( client ) && !player[client].Check){
+		player[client].Check = true;
+		CreateTimer( 0.3, PlayerSpawnTimer, GetClientUserId( client ), TIMER_FLAG_NO_MAPCHANGE );
+	}
+		
+}
+
+stock bool IsPlayerGhost( int client )
+{
+	if( GetEntProp( client, Prop_Send, "m_isGhost", 1 ) ) 
+		return true;
+	
+	return false;
+} 
+
+public Action PlayerSpawnTimer( Handle hTimer, any UserID )
+{
+	int client = GetClientOfUserId( UserID );
+	if( client <= 0 || IsClientConnected( client ) != true )
+		return Plugin_Handled;
+	
+	if( GetClientTeam( client ) == 2 && IsPlayerGhost( client ) != true )
+	{
+		ApplyClientCosmetics(client);
+	}
+	else if( GetClientTeam( client ) == 3 )
+	{
+		DisableGlow( client );
+		DisableSkin( client );
+	}
+	player[client].Check = false;
+	return Plugin_Continue;
+}
+
+public void Event_PlayerTeam(Event hEvent, const char[] name, bool dontBroadcast)
+{
+	int client = GetClientOfUserId (hEvent.GetInt("userid"));
+	int iTeam = hEvent.GetInt("team");
+	if( iTeam == 2 )
+	{
+		ApplyClientCosmetics(client);
+	}
+	if( iTeam == 3 ) {
+		DisableGlow( client );
+		DisableSkin( client );
+	}
+		
+}
+
+
+public int GetSurvivorPermHealth(int client)
+{
+	return GetEntProp(client, Prop_Send, "m_iHealth", 4, 0);
+}
+
+public int SetSurvivorPermHealth(int client, int health)
+{
+	SetEntProp(client, Prop_Send, "m_iHealth", health, 4, 0);
+	return 0;
+}
+
+public int IsPlayerIncap(int client)
+{
+	return GetEntProp(client, Prop_Send, "m_isIncapacitated", 4, 0);
+}
+
+public Action EventMissionLost(Handle event, const char []name, bool dontBroadcast){
+	for(int i=1;i<MaxClients;i++){
+		player[i].ClientPoints=500;
+		player[i].ClientFirstBuy=true;
+		player[i].CanBuy=true;
+	}
+	IsStart=false;
+	valid=true;
+	UseBuy = false;
+	return Plugin_Continue;
+}
+
+
+
+public void EventReturnBlood(Handle event, const char []name, bool dontBroadcast){
+	int victim = GetClientOfUserId(GetEventInt(event, "userid", 0));
+	int attacker = GetClientOfUserId(GetEventInt(event, "attacker", 0));
+	int var2 = victim;
+	if(IsValidClient(victim)){
+		DisableGlow( victim );
+		DisableSkin( victim );
+	}
+	if (MaxClients >= var2 && 1 <= var2)
+	{
+		if (GetClientTeam(victim) == 3)
+		{
+			if (IsSurvivor(attacker))
+			{
+					if (GetConVarBool(ReturnBlood))
+					{
+						int maxhp = GetEntProp(attacker, Prop_Data, "m_iMaxHealth", 4, 0);
+						int targetHealth = GetSurvivorPermHealth(attacker);
+						if(player[attacker].ClientBlood>0)
+							targetHealth += 2;
+						if (targetHealth > maxhp)
+						{
+							targetHealth = maxhp;
+						}
+						if (!IsPlayerIncap(attacker))
+						{
+							SetSurvivorPermHealth(attacker, targetHealth);
+						}
+					}
+			}
+		}
+	}
+}
+
+// allowBlock=false 用在游戏过程中的按需重连：共享连接未就绪时不在主线程阻塞。
+bool DetectSqliteDriver()
+{
+	char path[PLATFORM_MAX_PATH];
+	BuildPath(Path_SM, path, sizeof(path), "configs/databases.cfg");
+	KeyValues kv = new KeyValues("Databases");
+	if (!kv.ImportFromFile(path))
+	{
+		delete kv;
+		return false;
+	}
+	char def[32];
+	kv.GetString("driver_default", def, sizeof(def), "mysql");
+	bool sqlite = false;
+	if (kv.JumpToKey(DB_CONF_NAME))
+	{
+		char driver[32];
+		kv.GetString("driver", driver, sizeof(driver), "default");
+		if (StrEqual(driver, "default", false))
+		{
+			strcopy(driver, sizeof(driver), def);
+		}
+		sqlite = StrEqual(driver, "sqlite", false);
+	}
+	delete kv;
+	return sqlite;
+}
+
+void EnsureRpgSqliteTable()
+{
+	char error[256];
+	if (!AnneDB_LockedFastQuery(db,
+		"CREATE TABLE IF NOT EXISTS RPG (steamid TEXT NOT NULL PRIMARY KEY,MELEE_DATA INTEGER NOT NULL DEFAULT 0,BLOOD_DATA INTEGER NOT NULL DEFAULT 0,HAT INTEGER NOT NULL DEFAULT 0,HAT_ENABLED INTEGER DEFAULT NULL,HAT_VIEW_FIRST INTEGER DEFAULT NULL,HAT_VIEW_THIRD INTEGER DEFAULT NULL,HAT_SHOW_OTHERS INTEGER DEFAULT NULL,GLOW INTEGER NOT NULL DEFAULT 0,SKIN INTEGER NOT NULL DEFAULT 0,RECOIL INTEGER NOT NULL DEFAULT 0,ANNE_GUIDE_PROMPT INTEGER NOT NULL DEFAULT 1,CHATTAG TEXT DEFAULT NULL,hitsound_cfg INTEGER NOT NULL DEFAULT 0,hitsound_overlay INTEGER NOT NULL DEFAULT 0,hitsound_head INTEGER NOT NULL DEFAULT 0,hitsound_hit INTEGER NOT NULL DEFAULT 0,hitsound_kill INTEGER NOT NULL DEFAULT 0,hiticon_head INTEGER NOT NULL DEFAULT 0,hiticon_hit INTEGER NOT NULL DEFAULT 0,hiticon_kill INTEGER NOT NULL DEFAULT 0,hitsound_si_only INTEGER NOT NULL DEFAULT 0,hiticon_si_only INTEGER NOT NULL DEFAULT 0,hitsound_stack_mode INTEGER DEFAULT NULL,hitsound_headkill INTEGER DEFAULT NULL,hitsound_lethal_mode INTEGER DEFAULT NULL)",
+		error, sizeof(error)))
+	{
+		LogError("[RPG] Failed to ensure SQLite table: %s", error);
+	}
+}
+
+bool ConnectDB(bool allowBlock = true)
+{
+	if (db != INVALID_HANDLE)
+	{
+		g_bMysqlSystemAvailable = true;
+		return true;
+	}
+
+	if (SQL_CheckConfig(DB_CONF_NAME))
+	{
+		g_bSqliteDriver = DetectSqliteDriver();
+		char Error[256];
+		db = AnneDB_ConnectSyncCompat(DB_CONF_NAME, Error, sizeof(Error), AnneDBLane_Shared, allowBlock);
+		if (db == INVALID_HANDLE)
+		{
+			LogError("Failed to connect to database: %s", Error);
+			g_bMysqlSystemAvailable = false;
+			return false;
+		}
+		else if (!g_bSqliteDriver && !AnneDB_SetCharsetIfOwned(db,"utf8mb4"))
+		{
+			if (SQL_GetError(db, Error, sizeof(Error)))
+				LogError("Failed to update encoding to utf8mb4: %s", Error);
+			else
+				LogError("Failed to update encoding to utf8mb4: unknown");
+			CloseDbConnection();
+			g_bMysqlSystemAvailable = false;
+			return false;
+		}
+
+		if (g_bSqliteDriver)
+		{
+			EnsureRpgSqliteTable();
+		}
+		g_bGuidePreferenceColumnAvailable = EnsureAnneGuidePromptColumn();
+		if (!g_bGuidePreferenceColumnAvailable)
+		{
+			LogError("[RPG] ANNE_GUIDE_PROMPT is unavailable; guide prompts remain enabled without persistence.");
+		}
+
+		g_bHatPrefColumnAvailable = EnsureHatPreferenceColumns();
+		if (!g_bHatPrefColumnAvailable)
+		{
+			LogError("[RPG] Hat preference columns are unavailable; wear/view/visibility stay on clientprefs.");
+		}
+	}
+	else
+	{
+		LogError("Databases.cfg missing '%s' entry!", DB_CONF_NAME);
+		g_bMysqlSystemAvailable = false;
+		return false;
+	}
+
+	g_bMysqlSystemAvailable = true;
+	return true;
+}
+
+bool EnsureAnneGuidePromptColumn()
+{
+	if (db == INVALID_HANDLE)
+	{
+		return false;
+	}
+
+	char error[256];
+	char inspectSql[192];
+	if (g_bSqliteDriver)
+		strcopy(inspectSql, sizeof(inspectSql), "SELECT name FROM pragma_table_info('RPG') WHERE name='ANNE_GUIDE_PROMPT'");
+	else
+		strcopy(inspectSql, sizeof(inspectSql), "SHOW COLUMNS FROM `RPG` LIKE 'ANNE_GUIDE_PROMPT'");
+	Handle result = AnneDB_LockedQuery(db, inspectSql, error, sizeof(error));
+	if (result == INVALID_HANDLE || result == null)
+	{
+		LogError("[RPG] Failed to inspect ANNE_GUIDE_PROMPT: %s", error);
+		return false;
+	}
+
+	bool exists = SQL_GetRowCount(result) > 0;
+	delete result;
+	if (exists)
+	{
+		return true;
+	}
+
+	char alterSql[512];
+	if (g_bSqliteDriver)
+		strcopy(alterSql, sizeof(alterSql), "ALTER TABLE `RPG` ADD COLUMN `ANNE_GUIDE_PROMPT` INTEGER NOT NULL DEFAULT 1");
+	else
+		strcopy(alterSql, sizeof(alterSql), "ALTER TABLE `RPG` ADD COLUMN `ANNE_GUIDE_PROMPT` TINYINT NOT NULL DEFAULT 1 AFTER `RECOIL`");
+	char useAlter[512];
+	strcopy(useAlter, sizeof(useAlter), alterSql);
+	if (g_bSqliteDriver)
+	{
+		int afterPos = StrContains(useAlter, " AFTER ", false);
+		if (afterPos != -1)
+			useAlter[afterPos] = '\0';
+	}
+	if (!AnneDB_LockedFastQuery(db, useAlter, error, sizeof(error)))
+	{
+		LogError("[RPG] Failed to add ANNE_GUIDE_PROMPT: %s", error);
+		return false;
+	}
+
+	return true;
+}
+
+bool EnsureRpgNullableTinyintColumn(const char[] column, const char[] alterSql)
+{
+	if (db == INVALID_HANDLE)
+	{
+		return false;
+	}
+
+	char inspect[192];
+	if (g_bSqliteDriver)
+		FormatEx(inspect, sizeof(inspect), "SELECT name FROM pragma_table_info('RPG') WHERE name='%s'", column);
+	else
+		FormatEx(inspect, sizeof(inspect), "SHOW COLUMNS FROM `RPG` LIKE '%s'", column);
+	char error[256];
+	Handle result = AnneDB_LockedQuery(db, inspect, error, sizeof(error));
+	if (result == INVALID_HANDLE || result == null)
+	{
+		LogError("[RPG] Failed to inspect %s: %s", column, error);
+		return false;
+	}
+
+	bool exists = SQL_GetRowCount(result) > 0;
+	delete result;
+	if (exists)
+	{
+		return true;
+	}
+
+	if (!AnneDB_LockedFastQuery(db, alterSql, error, sizeof(error)))
+	{
+		if (StrContains(error, "Duplicate column", false) != -1)
+			return true;
+		LogError("[RPG] Failed to add %s: %s", column, error);
+		return false;
+	}
+
+	return true;
+}
+
+bool EnsureHatPreferenceColumns()
+{
+	if (db == INVALID_HANDLE)
+	{
+		return false;
+	}
+
+	bool ok = true;
+	ok = EnsureRpgNullableTinyintColumn("HAT_ENABLED", "ALTER TABLE `RPG` ADD COLUMN `HAT_ENABLED` TINYINT NULL DEFAULT NULL AFTER `HAT`") && ok;
+	ok = EnsureRpgNullableTinyintColumn("HAT_VIEW_FIRST", "ALTER TABLE `RPG` ADD COLUMN `HAT_VIEW_FIRST` TINYINT NULL DEFAULT NULL AFTER `HAT_ENABLED`") && ok;
+	ok = EnsureRpgNullableTinyintColumn("HAT_VIEW_THIRD", "ALTER TABLE `RPG` ADD COLUMN `HAT_VIEW_THIRD` TINYINT NULL DEFAULT NULL AFTER `HAT_VIEW_FIRST`") && ok;
+	ok = EnsureRpgNullableTinyintColumn("HAT_SHOW_OTHERS", "ALTER TABLE `RPG` ADD COLUMN `HAT_SHOW_OTHERS` TINYINT NULL DEFAULT NULL AFTER `HAT_VIEW_THIRD`") && ok;
+	return ok;
+}
+
+bool IsDbConnectionLostError(const char[] error)
+{
+	return StrContains(error, "Lost connection", false) != -1
+		|| StrContains(error, "server has gone away", false) != -1
+		|| StrContains(error, "communication packets", false) != -1;
+}
+
+void CloseDbConnection()
+{
+	if (db != INVALID_HANDLE)
+	{
+		CloseHandle(db);
+		db = INVALID_HANDLE;
+	}
+	g_bGuidePreferenceColumnAvailable = false;
+	g_bHatPrefColumnAvailable = false;
+}
+
+public void SendSQLUpdate(char []query)
+{
+    if (db == INVALID_HANDLE && !ConnectDB(false))
+	{
+        return;
+	}
+
+    SQL_TQuery(db, SQLErrorCheckCallback, query);
+}
+public void SQLErrorCheckCallback(Handle owner, Handle hndl, const char []error, any data)
+{
+	if (hndl == INVALID_HANDLE || hndl == null || error[0] != '\0')
+	{
+		LogError("SQL Error: %s", error);
+	}
+}
+
+
+public void OnClientConnected(int client)
+{
+	ResetRpgClient(client);
+}
+
+public void OnClientAuthorized(int client, const char[] auth)
+{
+	if (client < 1 || client > MaxClients || IsFakeClient(client))
+		return;
+	if (!g_bMysqlSystemAvailable || player[client].DataLoaded)
+		return;
+	if (!BeginRpgClientLoad(client))
+		ScheduleRpgAuthLoadRetry(client);
+}
+
+public void OnClientPostAdminCheck(int client)
+{
+	if (!ShouldPreserveRpgLoad(client))
+		ResetRpgClient(client);
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return;
+
+	RpgStartHumanClient(client);
+	RpgScheduleJoinTimers(client);
+}
+
+public void OnClientDisconnect(int client)
+{
+	ResetRpgClient(client);
+}
+
+public Action RpgGlowDebug(int client, int args)
+{
+	if (client != 0 && !IsValidClient(client))
+		return Plugin_Handled;
+
+	int target = client;
+	if (args >= 1)
+	{
+		char arg[64];
+		GetCmdArg(1, arg, sizeof(arg));
+		int found = FindTarget(client, arg, true, false);
+		if (found > 0)
+			target = found;
+	}
+	else if (client == 0)
+	{
+		ReplyToCommand(client, "[RPGGlow] Usage: sm_rpgglowdebug <player>");
+		return Plugin_Handled;
+	}
+
+	if (!IsValidClient(target) || IsFakeClient(target))
+	{
+		ReplyToCommand(client, "[RPGGlow] invalid human target.");
+		return Plugin_Handled;
+	}
+
+	char cfgName[128] = "";
+	char gameMode[32] = "";
+	ConVar cfgCvar = FindConVar("l4d_ready_cfg_name");
+	ConVar gameModeCvar = FindConVar("mp_gamemode");
+	if (cfgCvar != null)
+		cfgCvar.GetString(cfgName, sizeof(cfgName));
+	if (gameModeCvar != null)
+		gameModeCvar.GetString(gameMode, sizeof(gameMode));
+
+	int score = -1;
+	int rank = 0;
+	int cacheReady = -1;
+	int scoreReady = -1;
+	int top1 = 0;
+	if (g_bl4dstatsSystemAvailable && IsValidClient(target) && !IsFakeClient(target))
+	{
+		score = l4dstats_GetClientScore(target);
+		rank = l4dstats_GetClientRank(target);
+		cacheReady = l4dstats_IsTopPlayerCacheReady();
+		scoreReady = l4dstats_IsClientScoreReady(target);
+		top1 = l4dstats_IsTopPlayer(target, 1);
+	}
+
+	ReplyToCommand(client, "[RPGGlow] target=%N glow=%d allow_glow=%d pending_retry=%d", target, player[target].GlowType, g_bEnableGlow ? 1 : 0, g_bPendingGlowRetry[target] ? 1 : 0);
+	ReplyToCommand(client, "[RPGGlow] l4d_stats=%d cache_ready=%d score_ready=%d score=%d rank=%d top1=%d root=%d", g_bl4dstatsSystemAvailable ? 1 : 0, cacheReady, scoreReady, score, rank, top1, HasRootGlowAccess(target) ? 1 : 0);
+	ReplyToCommand(client, "[RPGGlow] can_basic=%d can_gold=%d can_rainbow=%d cfg=\"%s\" mp_gamemode=\"%s\"", HasBasicGlowAccess(target) ? 1 : 0, CanClientUseGlow(target, 15) ? 1 : 0, CanClientUseGlow(target, 16) ? 1 : 0, cfgName, gameMode);
+	return Plugin_Handled;
+}
+
+public Action SetClientTag(Handle timer, int userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return Plugin_Stop;
+	if (!player[client].DataLoaded)
+	{
+		if (!BeginRpgClientLoad(client))
+			ScheduleRpgAuthLoadRetry(client);
+		return Plugin_Stop;
+	}
+
+	ApplyCustomTagIfReady(client);
+	return Plugin_Stop;
+}
+
+public void HexTags_OnTagsUpdated(int client)
+{
+	if (client < 1 || client > MaxClients || player[client].tags.ChatTag[0] == '\0')
+		return;
+
+	g_bPendingCustomTagApply[client] = true;
+	RequestFrame(Frame_ApplyCustomTag, GetClientUserId(client));
+}
+
+public void Frame_ApplyCustomTag(any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (client > 0)
+		ApplyCustomTagIfReady(client);
+}
+
+bool ApplyCustomTagIfReady(int client)
+{
+	if (!IsValidClient(client) || IsFakeClient(client) || player[client].tags.ChatTag[0] == '\0')
+		return false;
+
+	if (!g_bHextagsSystemAvailable)
+	{
+		g_bPendingCustomTagApply[client] = true;
+		return false;
+	}
+
+	g_bPendingCustomTagApply[client] = false;
+	SetTags(client, player[client].tags.ChatTag);
+	return true;
+}
+
+
+public Action CheckPlayer(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if(!IsValidClient(client))
+		return Plugin_Stop;
+	if (!player[client].DataLoaded)
+	{
+		if (!BeginRpgClientLoad(client))
+			ScheduleRpgAuthLoadRetry(client);
+		return Plugin_Stop;
+	}
+
+	ApplyClientCosmetics(client);
+	if(g_bl4dstatsSystemAvailable && l4dstats_GetClientScore(client) < 500000 && !(CheckCommandAccess(client, "", ADMFLAG_SLAY)))
+		player[client].tags.ChatTag = NULL_STRING;
+	return Plugin_Stop;
+}
+
+public void SetPlayer(int client)
+{
+	ApplyClientCosmetics(client);
+}
+
+public void BypassAndExecuteCommand(int client, char []strCommand, char []strParam1)
+{
+	int flags = GetCommandFlags(strCommand);
+	SetCommandFlags(strCommand, flags & ~ FCVAR_CHEAT);
+	FakeClientCommand(client, "%s %s", strCommand, strParam1);
+	SetCommandFlags(strCommand, flags);
+}
+
+public Action Timer_AutoGive(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!IsSurvivor(client) || !player[client].DataLoaded)
+		return Plugin_Stop;
+
+	int temp = player[client].ClientMelee;
+	if(temp == 14) temp = GetRandomInt(1,13);
+	if (temp == 1)
+	{
+		BypassAndExecuteCommand(client, "give", "machete");
+	}
+	if (temp == 2)
+	{
+		BypassAndExecuteCommand(client, "give", "fireaxe");
+	}
+	if (temp == 3)
+	{
+		BypassAndExecuteCommand(client, "give", "knife");
+	}
+	if (temp == 4)
+	{
+		BypassAndExecuteCommand(client, "give", "katana");
+	}
+	if (temp == 5)
+	{
+		BypassAndExecuteCommand(client, "give", "pistol_magnum");
+	}
+	if (temp == 6)
+	{
+		BypassAndExecuteCommand(client, "give", "electric_guitar");
+	}
+	if (temp == 7)
+	{
+		BypassAndExecuteCommand(client, "give", "tonfa");
+	}
+	if (temp == 8)
+	{
+		BypassAndExecuteCommand(client, "give", "pitchfork");
+	}
+	if (temp == 9)
+	{
+		BypassAndExecuteCommand(client, "give", "shovel");
+	}
+	if (temp == 10)
+	{
+		BypassAndExecuteCommand(client, "give", "pistol");
+	}
+	if (temp == 11)
+	{
+		BypassAndExecuteCommand(client, "give", "frying_pan");
+	}
+	if (temp == 12)
+	{
+		BypassAndExecuteCommand(client, "give", "crowbar");
+	}	
+	if (temp == 13)
+	{
+		BypassAndExecuteCommand(client, "give", "cricket_bat");
+	}	
+	return Plugin_Stop;
+}
+
+public void ClientSaveToFileLoad(int Client)
+{
+	BeginRpgClientLoad(Client);
+}
+
+public void ClientSaveToFileCreate(int Client)
+{
+	if(!IsValidClient(Client) || IsFakeClient(Client) || !g_bMysqlSystemAvailable || !player[Client].DataLoaded)
+		return;
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return;
+
+	char query[768];
+	char SteamID[64];
+	if (!TryGetRpgSteamId(Client, SteamID, sizeof(SteamID)))
+		return;
+	g_bHatRowCreatePending[Client] = true;
+	bool includeHatPrefs = g_bHatPrefColumnAvailable && g_bHatPrefsReady[Client];
+	int hatEnabled, hatViewFirst, hatViewThird, hatShowOthers;
+	HatsUnpackPrefs(player[Client].HatPrefs, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers);
+	if (g_bGuidePreferenceColumnAvailable && includeHatPrefs)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "INSERT INTO RPG (steamid,MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,ANNE_GUIDE_PROMPT,HAT_ENABLED,HAT_VIEW_FIRST,HAT_VIEW_THIRD,HAT_SHOW_OTHERS) VALUES ('%s',%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d)", SteamID, player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, player[Client].AnneGuidePrompt, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers);
+	}
+	else if (g_bGuidePreferenceColumnAvailable)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "INSERT INTO RPG (steamid,MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,ANNE_GUIDE_PROMPT) VALUES ('%s',%d,%d,%d,%d,%d,%d,%d)", SteamID, player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, player[Client].AnneGuidePrompt);
+	}
+	else if (includeHatPrefs)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "INSERT INTO RPG (steamid,MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL,HAT_ENABLED,HAT_VIEW_FIRST,HAT_VIEW_THIRD,HAT_SHOW_OTHERS) VALUES ('%s',%d,%d,%d,%d,%d,%d,%d,%d,%d,%d)", SteamID, player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers);
+	}
+	else
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "INSERT INTO RPG (steamid,MELEE_DATA,BLOOD_DATA,HAT,GLOW,SKIN,RECOIL) VALUES ('%s',%d,%d,%d,%d,%d,%d)", SteamID, player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil);
+	}
+	SQL_TQuery(db, ClientSaveCreateCallback, query, GetClientUserId(Client));
+	return;
+}
+
+public void ClientSaveCreateCallback(Handle owner, Handle hndl, const char[] error, any userid)
+{
+	if (hndl == INVALID_HANDLE || hndl == null || error[0] != '\0')
+	{
+		LogError("[RPG] Failed to create player row: %s", error);
+		return;
+	}
+
+	int client = GetClientOfUserId(userid);
+	if (!client || !IsClientInGame(client) || !g_bHatRowCreatePending[client])
+		return;
+
+	g_bHatRowCreatePending[client] = false;
+	g_bHatTypeMysqlReady[client] = true;
+	if (g_bHatTypeCookieMigrationPending[client] && HatsArePrefsReadySafe(client))
+	{
+		player[client].ClientHat = HatIndexToStored(Hats_GetClientHat(client));
+		g_bHatTypeCookieMigrationPending[client] = false;
+	}
+	if (!g_bHatTypeCookieMigrationPending[client])
+		ClientHatTypeSaveToFile(client);
+	if (g_bHatPrefsReady[client])
+		ClientHatPrefsSaveToFile(client);
+	if (!g_bHatTypeCookieMigrationPending[client])
+		ApplyClientHat(client);
+}
+
+public void ClientTagsSaveToFileSave(int Client)
+{
+    if (!IsValidClient(Client) || IsFakeClient(Client) || !g_bMysqlSystemAvailable || !player[Client].DataLoaded)
+        return;
+
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return;
+
+    char SteamID[64];
+	if (!TryGetRpgSteamId(Client, SteamID, sizeof(SteamID)))
+		return;
+
+    if (player[Client].tags.ChatTag[0] == '\0')
+        CPrintToChat(Client, "%t", "RPG_TitleUnset");
+    else
+        CPrintToChat(Client, "%t", "RPG_TitleUpdatedSuccessfullyNewTitle", player[Client].tags.ChatTag);
+
+    char query[512];
+    SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET CHATTAG='%s' WHERE steamid = '%s'", player[Client].tags.ChatTag, SteamID);
+    SendSQLUpdate(query);
+}
+
+void ClientHatTypeSaveToFile(int client)
+{
+	if (!IsValidClient(client) || IsFakeClient(client) || !g_bMysqlSystemAvailable || !player[client].DataLoaded)
+		return;
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return;
+
+	char steamId[64];
+	if (!TryGetRpgSteamId(client, steamId, sizeof(steamId)))
+		return;
+
+	char query[192];
+	SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET HAT=%d WHERE steamid = '%s'", player[client].ClientHat, steamId);
+	SendSQLUpdate(query);
+}
+
+void ClientHatPrefsSaveToFile(int client)
+{
+	if (!IsValidClient(client) || IsFakeClient(client) || !g_bMysqlSystemAvailable
+		|| !player[client].DataLoaded || !g_bHatPrefColumnAvailable || !g_bHatPrefsReady[client])
+	{
+		return;
+	}
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return;
+
+	char steamId[64];
+	if (!TryGetRpgSteamId(client, steamId, sizeof(steamId)))
+		return;
+
+	int enabled, viewFirst, viewThird, showOthers;
+	HatsUnpackPrefs(player[client].HatPrefs, enabled, viewFirst, viewThird, showOthers);
+	char query[256];
+	SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET HAT_ENABLED=%d,HAT_VIEW_FIRST=%d,HAT_VIEW_THIRD=%d,HAT_SHOW_OTHERS=%d WHERE steamid = '%s'", enabled, viewFirst, viewThird, showOthers, steamId);
+	SendSQLUpdate(query);
+}
+
+public void ClientSaveToFileSave(int Client)
+{
+	if(!IsValidClient(Client) || IsFakeClient(Client) || !g_bMysqlSystemAvailable || !player[Client].DataLoaded)
+		return;
+	if (db == INVALID_HANDLE && !ConnectDB(false))
+		return;
+
+	char query[768];
+	char SteamID[64];
+	if (!TryGetRpgSteamId(Client, SteamID, sizeof(SteamID)))
+		return;
+	bool includeHatPrefs = g_bHatPrefColumnAvailable && g_bHatPrefsReady[Client];
+	int hatEnabled, hatViewFirst, hatViewThird, hatShowOthers;
+	HatsUnpackPrefs(player[Client].HatPrefs, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers);
+	if (g_bGuidePreferenceColumnAvailable && includeHatPrefs)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET MELEE_DATA=%d,BLOOD_DATA=%d,HAT=%d,GLOW=%d,SKIN=%d,RECOIL=%d,ANNE_GUIDE_PROMPT=%d,HAT_ENABLED=%d,HAT_VIEW_FIRST=%d,HAT_VIEW_THIRD=%d,HAT_SHOW_OTHERS=%d WHERE steamid = '%s'", player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, player[Client].AnneGuidePrompt, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers, SteamID);
+	}
+	else if (g_bGuidePreferenceColumnAvailable)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET MELEE_DATA=%d,BLOOD_DATA=%d,HAT=%d,GLOW=%d,SKIN=%d,RECOIL=%d,ANNE_GUIDE_PROMPT=%d WHERE steamid = '%s'", player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, player[Client].AnneGuidePrompt, SteamID);
+	}
+	else if (includeHatPrefs)
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET MELEE_DATA=%d,BLOOD_DATA=%d,HAT=%d,GLOW=%d,SKIN=%d,RECOIL=%d,HAT_ENABLED=%d,HAT_VIEW_FIRST=%d,HAT_VIEW_THIRD=%d,HAT_SHOW_OTHERS=%d WHERE steamid = '%s'", player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, hatEnabled, hatViewFirst, hatViewThird, hatShowOthers, SteamID);
+	}
+	else
+	{
+		SQL_FormatQuery(db, query, sizeof(query), "UPDATE RPG SET MELEE_DATA=%d,BLOOD_DATA=%d,HAT=%d,GLOW=%d,SKIN=%d,RECOIL=%d WHERE steamid = '%s'", player[Client].ClientMelee, player[Client].ClientBlood, player[Client].ClientHat, player[Client].GlowType, player[Client].SkinType, player[Client].ClientRecoil, SteamID);
+	}
+	SendSQLUpdate(query);
+	return;
+}
+
+//开局发近战能力武器
+public void L4D_OnFirstSurvivorLeftSafeArea_Post(int client)
+{
+	if(g_bReadyUpSystemAvailable && IsInReady())
+		return;
+	if(IsStart)
+		return;
+
+	IsStart = true;
+
+	if(g_cShopEnable.BoolValue){
+		for(int i=1;i<MaxClients;i++){
+			if(IsSurvivor(i))
+			{
+				CreateTimer(0.5, Timer_AutoGive, GetClientUserId(i), TIMER_FLAG_NO_MAPCHANGE);
+			}
+			player[i].ClientFirstBuy = false;
+		}
+	}
+	GaoJiRenJi = FindConVar("sb_fix_enabled");
+	if(GaoJiRenJi != null && GaoJiRenJi.BoolValue){
+		CPrintToChatAll("%t", "RPG_RANKCannotObtainAdditionalPoints");
+		SetRoundValid(false);
+	}
+}
+
+
+public Action EventRoundStart(Handle event, const char []name, bool dontBroadcast)
+{
+	for(int i=1;i<MaxClients;i++){
+		player[i].ClientPoints=500;
+		player[i].ClientFirstBuy = true;
+		player[i].CanBuy = true;
+	}
+	IsStart = false;
+	valid = true;
+	UseBuy = false;
+	return Plugin_Continue;
+}
+
+//检查client合法
+int IsVaildClient(int client)
+{
+	if( client > 0 ) return 1;
+	if( client < 64 ) return 1;
+	if( IsClientInGame(client) ) return 1;
+	if( GetClientTeam(client) == 2 ) return 1;
+	else
+    {
+        return 0;
+    }
+}
+
+//输出rpg任务信息动作
+public Action RpgInfo(int client,int args)
+{
+	if(IsVaildClient(client) && IsPlayerAlive(client)  )
+	{
+		PrintToConsole(client,"melee:%d blood:%d glow:%d hat:%d skin:%d recoil:%d", player[client].ClientMelee, player[client].ClientBlood, player[client].GlowType, player[client].ClientHat, player[client].SkinType, player[client].ClientRecoil);
+		PrintToConsole(client,"valid:%d uesbuy:%d", valid, UseBuy);
+	}
+	return Plugin_Continue;
+}
+
+//购买菜单指令动作
+public Action BuyMenu(int client,int args)
+{
+	if(IsVaildClient(client) && IsPlayerAlive(client)  )
+	{
+		FakeClientCommand(client, "sm_resetscore");
+		BuildMenu(client);
+	}
+	return Plugin_Continue;
+}
+
+static bool IsRegisteredInfectedControlTraitor(int client)
+{
+	return g_bInfectedControlAvailable
+		&& GetFeatureStatus(FeatureType_Native, "InfectedControl_IsTraitorRegistered") == FeatureStatus_Available
+		&& IsValidClient(client)
+		&& InfectedControl_IsTraitorRegistered(client);
+}
+
+static bool CanUseShop(int client)
+{
+	if (IsRegisteredInfectedControlTraitor(client))
+	{
+		CPrintToChat(client, "%t", "RPG_TraitorCannotUseShop");
+		return false;
+	}
+
+	if (g_cShopEnable != null && g_cShopEnable.BoolValue)
+	{
+		return true;
+	}
+
+	if (IsValidClient(client))
+	{
+		CPrintToChat(client, "%t", "RPG_StoreClosedFunctionCannotUsed");
+	}
+	return false;
+}
+
+//快速买子弹指令
+public Action BuyAmmo(int client,int args)
+{
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{
+		GiveItems(client,"ammo");
+		CPrintToChatAll("%t", "RPG_AddedBullets", client);
+	}
+	return Plugin_Continue;
+}
+
+//快速买喷子指令
+public Action BuyPen(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{
+		if(player[client].ClientFirstBuy){
+			player[client].ClientFirstBuy=false;
+			bool result = false;
+			if(GetRandomInt(0,1))
+				result = RemovePoints(client,0,"pumpshotgun");
+			else
+				result = RemovePoints(client,0,"shotgun_chrome");
+			if(result)
+			CPrintToChatAll("%t", "RPG_FirstTimeRandomTrollFree", client);
+		}else if(player[client].ClientPoints>49)
+		{
+			bool result = false;
+			if(GetRandomInt(0,1))
+				result = RemovePoints(client,50,"pumpshotgun");
+			else
+				result = RemovePoints(client,50,"shotgun_chrome");
+			if(result)
+			CPrintToChatAll("%t", "RPG_QuicklySpend50BuySingle", client);
+		}else{
+			CPrintToChat(client, "%t", "RPG_NotEnoughMoneyForShotgun");
+		}
+	}
+	return Plugin_Continue;
+}
+
+//快速买二代单喷指令
+public Action BuyChr(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{
+		if(player[client].ClientFirstBuy){
+			player[client].ClientFirstBuy=false;
+			if(RemovePoints(client,0,"shotgun_chrome"))
+			CPrintToChatAll("%t", "RPG_FirstTimeGotSecondsondGeneration", client);
+		}else if(player[client].ClientPoints>49)
+		{
+			if(RemovePoints(client,50,"shotgun_chrome"))
+			CPrintToChatAll("%t", "RPG_QuicklySpend50BuySecondsond", client);
+		}else{
+			CPrintToChat(client, "%t", "RPG_NotEnoughMoneyForShotgun");
+		}
+	}
+	return Plugin_Continue;
+}
+
+//快速买pump指令
+public Action BuyPum(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{
+		if(player[client].ClientFirstBuy){
+			player[client].ClientFirstBuy=false;
+			if(RemovePoints(client,0,"pumpshotgun"))
+			CPrintToChatAll("%t", "RPG_FirstGenerationSingleSpray", client);
+		}else if(player[client].ClientPoints>49)
+		{
+			if(RemovePoints(client,50,"pumpshotgun"))
+			CPrintToChatAll("%t", "RPG_QuicklySpend50BuyFirst", client);
+		}else{
+			CPrintToChat(client, "%t", "RPG_NotEnoughMoneyForShotgun");
+		}
+	}
+	return Plugin_Continue;
+}
+
+//快速买机枪指令
+public Action BuySmg(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{ 
+		if(player[client].ClientFirstBuy){
+			player[client].ClientFirstBuy=false;
+			if(RemovePoints(client,0,"smg_silenced"))
+			CPrintToChatAll("%t", "RPG_FirstTimeBoughtSilencedSMG", client);
+		}else if(player[client].ClientPoints>49)
+		{
+			if(RemovePoints(client,50,"smg_silenced"))
+			CPrintToChatAll("%t", "RPG_QuicklySpend50BuySilenced", client);
+		}else{
+			CPrintToChat(client, "%t", "RPG_DonMoneyCanBuyCrappy");
+		}
+	}
+	return Plugin_Continue;
+}
+
+//快速买uzi指令
+public Action BuyUzi(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{ 
+		if(player[client].ClientFirstBuy){
+			player[client].ClientFirstBuy=false;
+			if(RemovePoints(client,0,"smg"))
+			CPrintToChatAll("%t", "RPG_FirstTimeFreeUzi", client);
+		}else if(player[client].ClientPoints>49)
+		{
+			if(RemovePoints(client,50,"smg"))
+			CPrintToChatAll("%t", "RPG_QuicklySpend50RandomlyBuy", client);
+		}else{
+			CPrintToChat(client, "%t", "RPG_DonMoneyCanBuyCrappy");
+		}
+	}
+	return Plugin_Continue;
+}
+
+//快速买药指令
+public Action BuyPill(int client,int args)
+{ 
+	if(IsVaildClient(client) && IsPlayerAlive(client) && CanUseShop(client))
+	{
+		if(RemovePoints(client,400,"pain_pills"))
+		CPrintToChatAll("%t", "RPG_QuicklySpent400BuyBottle", client);
+	}
+	return Plugin_Continue;
+}
+
+//佩戴自定义称号
+public Action ApplyTags(int client,int args)
+{
+	if(player[client].tags.ChatTag[0] != '\0')
+		SetTags(client,player[client].tags.ChatTag);
+	else
+		CPrintToChat(client, "%t", "RPG_FirstUseSetchTitleName");
+	return Plugin_Continue;
+}
+
+//设置称号指令
+public Action SetCH(int client,int args)
+{ 
+	if(!IsVaildClient(client)){return Plugin_Handled;}
+	if((g_bl4dstatsSystemAvailable && l4dstats_GetClientScore(client) < 500000 && !(CheckCommandAccess(client, "", ADMFLAG_SLAY))))
+	{
+		ReplyToCommand(client,"你得积分小于50w，不能自定义称号");
+		return Plugin_Handled;
+	}
+	if(args!=1){
+		ReplyToCommand(client,"{lightgreen}错误参数，使用方式为!setch \"你想要的称号名字\"");
+		return Plugin_Handled;
+	}
+	if(!IsValidClient(client) || IsFakeClient(client))
+	{
+		ReplyToCommand(client,"{lightgreen}错误index");
+		return Plugin_Handled;
+	}
+	GetCmdArg(1, player[client].tags.ChatTag, 24);
+	if(IsNullString(player[client].tags.ChatTag) || strlen(player[client].tags.ChatTag) == 0 || player[client].tags.ChatTag[0] == '\0')
+	{
+		ReplyToCommand(client,"{lightgreen}错误名字长度");
+ 		return Plugin_Handled;
+	}
+	SetTags(client,player[client].tags.ChatTag);
+    /*
+    char temp[32];
+    Format(temp,sizeof(temp),"<%s>",player[client].tags.ChatTag);
+    HexTags_SetClientTag(client, ScoreTag, temp);
+    Format(temp,sizeof(temp),"{green}<%s>",player[client].tags.ChatTag);
+	HexTags_SetClientTag(client, ChatTag, temp);
+    HexTags_SetClientTag(client, ChatColor, "{teamcolor}");
+    HexTags_SetClientTag(client, NameColor, "{lightgreen}");
+    */
+	ClientTagsSaveToFileSave(client);
+	return Plugin_Continue;
+}
+
+//取消已设置称号指令
+public Action UnSetCH(int client,int args)
+{ 
+	if(!IsVaildClient(client)){return Plugin_Handled;}
+	if((g_bl4dstatsSystemAvailable && l4dstats_GetClientScore(client) < 500000 && !(CheckCommandAccess(client, "", ADMFLAG_SLAY))))
+	{
+		ReplyToCommand(client,"你得积分小于50w，不能取消自定义称号");
+		return Plugin_Handled;
+	}
+	if(!IsValidClient(client) || IsFakeClient(client))
+	{
+		ReplyToCommand(client,"{lightgreen}错误index");
+		return Plugin_Handled;
+	}
+	player[client].tags.ChatTag = NULL_STRING;
+	if(g_bHextagsSystemAvailable)HexTags_ResetClientTag(client);
+	//SetTags(client,player[client].tags.ChatTag);
+    /*
+    char temp[32];
+    Format(temp,sizeof(temp),"<%s>",player[client].tags.ChatTag);
+    HexTags_SetClientTag(client, ScoreTag, temp);
+    Format(temp,sizeof(temp),"{green}<%s>",player[client].tags.ChatTag);
+	HexTags_SetClientTag(client, ChatTag, temp);
+    HexTags_SetClientTag(client, ChatColor, "{teamcolor}");
+    HexTags_SetClientTag(client, NameColor, "{lightgreen}");
+    */
+	ClientTagsSaveToFileSave(client);
+	return Plugin_Continue;
+}
+
+public void SetTags(int client, char[] tagsname)
+{
+    if (!g_bHextagsSystemAvailable)
+    {
+        CPrintToChat(client, "%t", "RPG_TitleModuleNotEnabledTitle");
+        return;
+    }
+    char temp[32];
+    Format(temp, sizeof(temp), "<%s>", tagsname);
+    HexTags_SetClientTag(client, ScoreTag, temp);
+
+    Format(temp, sizeof(temp), "{green}<%s>", tagsname);
+    HexTags_SetClientTag(client, ChatTag, temp);
+    HexTags_SetClientTag(client, ChatColor, "{teamcolor}");
+    HexTags_SetClientTag(client, NameColor, "{lightgreen}");
+}
+
+
+public Action ResetBuy(Handle timer, int userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!IsValidClient(client) || IsFakeClient(client))
+		return Plugin_Stop;
+
+	player[client].CanBuy = true;
+	return Plugin_Stop;
+}
+
+static bool CanSpendB(int client, int costpoints)
+{
+    // 0B 永远允许
+    if (costpoints <= 0) return true;
+
+    // >0B 时需开关允许
+    if (g_bAllowUseB) return true;
+
+    CPrintToChat(client, "%t", "RPG_CurrentlyProhibitedUseNumberPurchase");
+    return false;
+}
+
+//分数操作
+public bool RemovePoints(int client, int costpoints,char bitem[64])
+{
+	if (!CanUseShop(client))
+	{
+		return false;
+	}
+
+	if(!player[client].CanBuy)
+	{
+		CPrintToChat(client, "%t", "RPG_ShopSkillsCoolingDownCooling");
+		return false;
+	}
+	// 新增：消费开关判定（>0B 时禁止）
+    if (!CanSpendB(client, costpoints))
+    {
+		CPrintToChat(client, "%t", "RPG_ServerClosedCoinUsageChannel");
+		return false;
+	}
+	int actuallypoints = player[client].ClientPoints - costpoints;
+	if(!UseBuy && actuallypoints < 500)
+	{
+		SetRoundUseBuy(true);
+	}
+	if(IsVaildClient(client) && actuallypoints >= 0)
+	{	
+		GiveItems(client,bitem);
+		player[client].ClientPoints=player[client].ClientPoints - costpoints;
+		player[client].CanBuy = false;
+		CreateTimer(15.0, ResetBuy, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+		return true;
+	}
+	else
+	{
+		CPrintToChat(client, "%t", "RPG_DonPointMind");
+		return false;
+	}
+
+}
+//数据库操作返回数据
+public void ShowMelee(Handle owner, Handle hndl, const char []error, any data)
+{
+    int client = GetClientOfUserId(data);
+
+	if (!client || IsFakeClient(client) || !IsSameRpgLoadQuery(client, data))
+        return;
+	if (!IsClientInGame(client))
+	{
+		g_bDbLoadInFlight[client] = false;
+		g_iDbLoadUserId[client] = 0;
+		ScheduleRpgAuthLoadRetry(client);
+		return;
+	}
+
+	g_bDbLoadInFlight[client] = false;
+	g_iDbLoadUserId[client] = 0;
+
+	if (hndl == INVALID_HANDLE || hndl == null || error[0] != '\0')
+	{
+		LogError("[RPG] ShowMelee query failed: %s", error);
+
+		if (IsDbConnectionLostError(error) && g_iDbLoadRetryCount[client] < 1)
+		{
+			g_iDbLoadRetryCount[client]++;
+			CreateTimer(RPG_DB_LOAD_RETRY_DELAY, Timer_RetryClientLoad, GetClientUserId(client), TIMER_FLAG_NO_MAPCHANGE);
+			return;
+		}
+
+		player[client].AnneGuidePrompt = 1;
+		player[client].DataLoaded = true;
+		if (g_bHatDirty[client])
+		{
+			ClientHatTypeSaveToFile(client);
+			g_bHatDirty[client] = false;
+		}
+		if (g_bHatPrefDirty[client] && g_bHatPrefColumnAvailable)
+		{
+			g_bHatPrefsReady[client] = true;
+			g_bHatPrefMigrationPending[client] = false;
+			ClientHatPrefsSaveToFile(client);
+			g_bHatPrefDirty[client] = false;
+		}
+		return;
+	}
+
+	g_iDbLoadRetryCount[client] = 0;
+
+	    if (SQL_FetchRow(hndl))
+	    {
+		g_bHatTypeMysqlReady[client] = true;
+ 		player[client].ClientMelee = SQL_FetchInt(hndl, 0);
+ 		player[client].ClientBlood = SQL_FetchInt(hndl, 1);
+		int storedHat = SQL_FetchInt(hndl, 2);
+		if (!g_bHatDirty[client])
+			player[client].ClientHat = storedHat;
+ 		player[client].GlowType = SQL_FetchInt(hndl, 3);
+ 		player[client].SkinType = SQL_FetchInt(hndl, 4);
+		player[client].ClientRecoil = SQL_FetchInt(hndl, 5);
+		FakeClientCommand(client, "sm_recoil %d", player[client].ClientRecoil);
+		SQL_FetchString(hndl, 6, player[client].tags.ChatTag, 24);
+		player[client].AnneGuidePrompt = g_bGuidePreferenceColumnAvailable ? SQL_FetchInt(hndl, 7) : 1;
+
+		bool needPrefSave = false;
+		int prefCol = -1;
+		if (g_bHatPrefColumnAvailable)
+			prefCol = g_bGuidePreferenceColumnAvailable ? 8 : 7;
+		if (prefCol >= 0 && g_bHatPrefDirty[client])
+		{
+			g_bHatPrefsReady[client] = true;
+			g_bHatPrefMigrationPending[client] = false;
+		}
+		else if (prefCol >= 0)
+		{
+			bool migrate = SQL_IsFieldNull(hndl, prefCol)
+				|| SQL_IsFieldNull(hndl, prefCol + 1)
+				|| SQL_IsFieldNull(hndl, prefCol + 2)
+				|| SQL_IsFieldNull(hndl, prefCol + 3);
+			if (migrate)
+			{
+				if (HatsArePrefsReadySafe(client))
+				{
+					player[client].HatPrefs = HatsGetPrefsSafe(client);
+					g_bHatPrefsReady[client] = true;
+					g_bHatPrefMigrationPending[client] = false;
+					needPrefSave = true;
+				}
+				else
+				{
+					g_bHatPrefsReady[client] = false;
+					g_bHatPrefMigrationPending[client] = true;
+				}
+			}
+			else
+			{
+				player[client].HatPrefs = HatsPackPrefValues(
+					SQL_FetchInt(hndl, prefCol),
+					SQL_FetchInt(hndl, prefCol + 1),
+					SQL_FetchInt(hndl, prefCol + 2),
+					SQL_FetchInt(hndl, prefCol + 3));
+				g_bHatPrefsReady[client] = true;
+				g_bHatPrefMigrationPending[client] = false;
+			}
+		}
+
+		player[client].DataLoaded = true;
+		if (g_bHatDirty[client] || g_bHatPrefDirty[client] || needPrefSave)
+			ClientSaveToFileSave(client);
+		g_bHatDirty[client] = false;
+		g_bHatPrefDirty[client] = false;
+		ApplyCustomTagIfReady(client);
+		ApplyClientCosmetics(client);
+	}
+	else
+	{
+		CPrintToChat(client, "%t", "RPG_NewUserCreatingDatabase");
+		player[client].AnneGuidePrompt = 1;
+		g_bHatTypeMysqlReady[client] = false;
+		if (!g_bHatDirty[client])
+		{
+			if (HatsArePrefsReadySafe(client))
+				player[client].ClientHat = HatIndexToStored(Hats_GetClientHat(client));
+			else if (g_bHatSystemAvailable)
+				g_bHatTypeCookieMigrationPending[client] = true;
+		}
+		if (g_bHatPrefColumnAvailable && (g_bHatPrefDirty[client] || HatsArePrefsReadySafe(client)))
+		{
+			if (!g_bHatPrefDirty[client])
+				player[client].HatPrefs = HatsGetPrefsSafe(client);
+			g_bHatPrefsReady[client] = true;
+			g_bHatPrefMigrationPending[client] = false;
+		}
+		else if (g_bHatPrefColumnAvailable && g_bHatSystemAvailable)
+		{
+			g_bHatPrefsReady[client] = false;
+			g_bHatPrefMigrationPending[client] = true;
+		}
+		player[client].DataLoaded = true;
+		ClientSaveToFileCreate(client);
+		g_bHatDirty[client] = false;
+		g_bHatPrefDirty[client] = false;
+		ApplyClientCosmetics(client);
+	}
+}
+
+public Action Timer_RetryClientLoad(Handle timer, any userid)
+{
+	int client = GetClientOfUserId(userid);
+	if (!client || !IsClientInGame(client) || IsFakeClient(client))
+		return Plugin_Stop;
+
+	if (!player[client].DataLoaded && !BeginRpgClientLoad(client))
+		ScheduleRpgAuthLoadRetry(client);
+	return Plugin_Stop;
+}
+//实现给予物品
+public void GiveItems(int client, char bitem[64])
+{
+	int flags = GetCommandFlags("give");	
+	SetCommandFlags("give", flags & ~FCVAR_CHEAT);
+	FakeClientCommand(client, "give %s", bitem);
+	SetCommandFlags("give", flags|FCVAR_CHEAT);
+}
+
+//创建购买菜单>>主菜单
+/*public void BuildMenu定义的是这个菜单的具体内容，包括标题，选项。
+以下都是各个菜单的东西，不用修改。
+*/
+public void BuildMenu(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[255];
+		Menu menu = new Menu(TopMenu);
+
+		FormatEx(binfo, sizeof(binfo), "☆☆购物商店☆☆\n—————————\n当前B数：%d\n—————————",player[client].ClientPoints, client);	//玩家积分：
+		menu.SetTitle(binfo);
+
+		//FormatEx(binfo, sizeof(binfo),  "购买枪械", client);	//武器
+		if(g_cShopEnable.BoolValue && !IsRegisteredInfectedControlTraitor(client)){
+			FormatEx(binfo, sizeof(binfo), "购买枪械", client);
+			menu.AddItem("gun", binfo);
+
+			FormatEx(binfo, sizeof(binfo),  "购买补给", client); //补给
+			menu.AddItem("supply", binfo);
+
+			FormatEx(binfo, sizeof(binfo),  "出门近战技能", client); //技能菜单
+			menu.AddItem("ability", binfo);
+		}	
+		if (GetConVarBool(ReturnBlood)){
+			FormatEx(binfo, sizeof(binfo),  "回血技能", client); //技能菜单
+			menu.AddItem("Blood", binfo);
+		}
+		if (g_bpunchangelSystemAvailable){
+			FormatEx(binfo, sizeof(binfo),  "枪械抖动设置", client); //技能菜单
+			menu.AddItem("Recoil", binfo);
+		}
+		if(g_bHextagsSystemAvailable){
+			FormatEx(binfo, sizeof(binfo),  "称号菜单", client); //称号菜单
+			menu.AddItem("ChatTags", binfo);
+		}
+		
+		if(g_bHatSystemAvailable){
+			FormatEx(binfo, sizeof(binfo),  "帽子菜单", client); //帽子菜单
+			menu.AddItem("Hat", binfo);
+		}
+
+		if(g_bDamageShowHudAvailable){
+			FormatEx(binfo, sizeof(binfo),  "伤害显示菜单", client); //伤害显示菜单
+			menu.AddItem("Damage", binfo);
+		}
+
+		if(g_bHitSoundAvailable){
+			FormatEx(binfo, sizeof(binfo),  "命中反馈菜单", client); //伤害显示菜单
+			menu.AddItem("HitSound", binfo);
+		}
+
+		if(g_bBeamItemAvailable){
+			FormatEx(binfo, sizeof(binfo),  "物品光束设置", client); //物品光束菜单
+			menu.AddItem("BeamItem", binfo);
+		}
+
+		if(g_bEnableGlow && (HasBasicGlowAccess(client) || player[client].GlowType > 0))
+		{
+			FormatEx(binfo, sizeof(binfo),  "生还者轮廓", client); //生还者轮廓菜单
+			menu.AddItem("Survivor_glow", binfo);
+		}
+
+		if((g_bl4dstatsSystemAvailable && ( l4dstats_IsTopPlayer(client,50) || (l4dstats_IsQuarterTopPlayer(client, 10) && l4dstats_GetClientQuarterScore(client) > 100000 )|| ((CheckCommandAccess(client, "", ADMFLAG_SLAY))) || player[client].SkinType > 0 )) || !g_bl4dstatsSystemAvailable)
+		{
+			FormatEx(binfo, sizeof(binfo),  "生还者皮肤", client); //生还者轮廓菜单
+			menu.AddItem("Survivor_skin", binfo);
+		}
+				
+		menu.Display(client, 20);
+
+	}
+}
+/*public int TopMenu定义的是选择了某个选项之后的动作*/
+public int TopMenu(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch(action)
+	{
+		case MenuAction_Select:
+		{
+			char bitem[64];
+			menu.GetItem(param2, bitem, sizeof(bitem));
+			if( StrEqual(bitem, "gun") )
+			{
+				if (!CanUseShop(param1)) return 0;
+				gun(param1);
+			}
+			else if( StrEqual(bitem, "supply") )
+			{
+				if (!CanUseShop(param1)) return 0;
+				supply(param1);
+			}
+			else if( StrEqual(bitem, "ability") )
+			{
+				if (!CanUseShop(param1)) return 0;
+				ability(param1);
+			}
+			else if( StrEqual(bitem, "Blood") )
+				Blood(param1);
+			else if( StrEqual(bitem, "ChatTags") )
+				ChatTags(param1);
+			else if( StrEqual(bitem, "Hat") )
+				Hat(param1);
+			else if( StrEqual(bitem, "Survivor_glow") )
+				Survivor_glow(param1);
+			else if( StrEqual(bitem, "Survivor_skin") )
+				Survivor_skin(param1);
+			else if( StrEqual(bitem, "Recoil") )
+				Recoil(param1);
+			else if( StrEqual(bitem, "Damage"))
+				Damage(param1);
+			else if( StrEqual(bitem, "HitSound"))
+				HitSound(param1);
+			else if( StrEqual(bitem, "BeamItem"))
+				BeamItem(param1);
+		}
+		case MenuAction_End:
+			delete menu;
+	}
+	return 0;
+}
+//thanks "[L4D2] Glow Survivor" author King_OXO  url = "https://forums.alliedmods.net/showthread.php?t=332956"
+//创建购买菜单>>主菜单--生还者轮廓菜单
+public void Survivor_glow(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		ValidateClientGlow(client, true, true);
+		Menu menu = new Menu(VIPAuraMenuHandler);
+		menu.SetTitle("生还者轮廓\n——————————");
+		menu.AddItem("option0", "关闭\n ", player[client].GlowType == 0 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+		if(HasBasicGlowAccess(client))
+		{
+			menu.AddItem("option1", "绿色", player[client].GlowType == 1 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option2", "蓝色", player[client].GlowType == 2 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option3", "藍紫色", player[client].GlowType == 3 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option4", "青色", player[client].GlowType == 4 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option5", "橘黄色", player[client].GlowType == 5 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option6", "红色", player[client].GlowType == 6 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option7", "灰色", player[client].GlowType == 7 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option8", "黄色", player[client].GlowType == 8 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option9", "酸橙色", player[client].GlowType == 9 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option10", "栗色", player[client].GlowType == 10 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option11", "藍綠色", player[client].GlowType == 11 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option12", "粉红色", player[client].GlowType == 12 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option13", "紫色", player[client].GlowType == 13 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option14", "白色", player[client].GlowType == 14 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			DumpAdminCache(AdminCache_Admins,true);
+			DumpAdminCache(AdminCache_Groups,true);
+			if(CanClientUseGlow(client, 15))
+				menu.AddItem("option15", "金黄色", player[client].GlowType == 15 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			if(CanClientUseGlow(client, 16))
+				menu.AddItem("option16", "彩虹色", player[client].GlowType == 16 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			//个人定制轮廓部分
+			if(CanClientUseGlow(client, 17)){
+				//760308896 定制
+				menu.AddItem("option17", "定制轮廓1", player[client].GlowType == 17 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+			if(CanClientUseGlow(client, 18)){
+				//8894224 定制
+				menu.AddItem("option18", "定制轮廓2", player[client].GlowType == 18 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+			if(CanClientUseGlow(client, 19)){
+				//1850229089 定制
+				menu.AddItem("option19", "定制轮廓3", player[client].GlowType == 19 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+		}	
+		menu.ExitButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
+	}
+}
+
+public int VIPAuraMenuHandler(Menu menu, MenuAction action, int param1, int param2) 
+{
+    switch (action) 
+    {
+        case MenuAction_End:
+            delete menu;
+        case MenuAction_Select: 
+        {
+            char option[64];
+            menu.GetItem(param2, option, sizeof(option));
+            //PrintToConsoleAll("%s", option);
+	            char result[2][6];
+	            ExplodeString(option, "option", result, 2, 6);
+	            //PrintToConsoleAll("%s", result[1]);
+	            int glowType = StringToInt(result[1], 10);
+	            if (glowType != 0 && !CanClientUseGlow(param1, glowType))
+	            {
+	                ClearClientGlow(param1, true, true);
+	                return 0;
+	            }
+	            GetAura(param1, glowType, true, true);
+	            ClientSaveToFileSave(param1);
+            //SetCookie(param1, cookie, param2);
+			
+            Survivor_glow( param1 );
+        }
+    }
+
+    return 0;
+}
+
+void GetAura(int client, int id, bool validate = true, bool announce = true) 
+{
+	if (validate && id != 0 && !CanClientUseGlow(client, id))
+	{
+		ClearClientGlow(client, true, true);
+		return;
+	}
+
+    switch (id) 
+    {
+        case 0: 
+        {    
+            DisableGlow( client );
+            player[client].GlowType = id;
+//          CPrintToChat(client, "{olive}你 have turned off the Glow");
+            return;
+        }
+        case 1: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 0 + (255 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_ChangeOutlineColorGreen");
+        }
+        case 2: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 7 + (19 * 256) + (250 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorBlue");
+        }
+        case 3: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 249 + (19 * 256) + (250 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorBlueViolet");
+        }
+        case 4: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 66 + (250 * 256) + (250 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_ChangeOutlineColorCyan");
+        }
+        case 5: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 249 + (155 * 256) + (84 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorOrange");
+        }
+        case 6: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (0 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorRed");
+        }
+        case 7: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 50 + (50 * 256) + (50 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorGray");
+        }
+        case 8: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (255 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorYellow");
+        }
+        case 9: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 128 + (255 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorLime");
+        }
+        case 10: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 128 + (0 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorMaroon");
+        }
+        case 11: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 0 + (128 * 256) + (128 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorTeal");
+        }
+        case 12:
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (0 * 256) + (150 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorPink");
+        }
+        case 13:
+        {        
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 155 + (0 * 256) + (255 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorPurple");
+        }
+        case 14: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", -1 + (-1 * 256) + (-1 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorWhite");
+        }
+        case 15: 
+        {
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (155 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorGold");
+        }
+        case 16: 
+        {
+            SDKHook(client, SDKHook_PreThink, RainbowPlayer);
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorRainbow");
+        }
+		case 17:
+		{
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (69 * 256) + (0 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorCustomOutline");
+		}
+		case 18:
+		{
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (110 * 256) + (156 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorCustomOutline");
+		}
+		case 19:
+		{
+            SetEntProp(client, Prop_Send, "m_glowColorOverride", 255 + (115 * 256) + (215 * 65536));
+            if (announce) CPrintToChat(client, "%t", "RPG_SetOutlineColorCustomOutline");
+		}
+    }
+
+	if ((id >= 0 && id <= 15) || id >= 17)    {
+        SetEntProp(client, Prop_Send, "m_iGlowType", 3);
+        SetEntProp(client, Prop_Send, "m_nGlowRange", 99999);
+        SetEntProp(client, Prop_Send, "m_nGlowRangeMin", 0);
+		
+        SDKUnhook(client, SDKHook_PreThink, RainbowPlayer);
+    }
+    
+    player[client].GlowType = id;
+    
+}
+
+void DisableGlow( int client )
+{
+	if( IsValidClient( client ))
+	{		
+		SetEntProp(client, Prop_Send, "m_glowColorOverride", 0);
+		SetEntProp(client, Prop_Send, "m_iGlowType", 0);
+		SDKUnhook(client, SDKHook_PreThink, RainbowPlayer);
+	}
+}
+
+public Action RainbowPlayer(int client)
+{
+	if( IsValidClient( client ) != true || IsPlayerAlive(client) != true || GetClientTeam( client ) == 3 )
+	{
+		SDKUnhook(client, SDKHook_PreThink, RainbowPlayer);
+		
+		if( GetClientTeam( client ) == 3 )
+		{
+			SetEntProp(client, Prop_Send, "m_glowColorOverride", 0);
+			SetEntProp(client, Prop_Send, "m_iGlowType", 0);
+		}
+		
+		return Plugin_Handled;
+	}
+    
+	SetEntProp(client, Prop_Send, "m_glowColorOverride", RoundToNearest(Cosine((GetGameTime() * 8.0) + client + 1) * 127.5 + 127.5) + (RoundToNearest(Cosine((GetGameTime() * 8.0) + client + 3) * 127.5 + 127.5) * 256) + (RoundToNearest(Cosine((GetGameTime() * 8.0) + client + 5) * 127.5 + 127.5) * 65536));
+	SetEntProp(client, Prop_Send, "m_iGlowType", 3);
+	SetEntProp(client, Prop_Send, "m_nGlowRange", 99999);
+	SetEntProp(client, Prop_Send, "m_nGlowRangeMin", 0);
+	return Plugin_Continue;
+}
+
+//创建购买菜单>>主菜单--生还者皮肤菜单
+public void Survivor_skin(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		Menu menu = new Menu(VIPSkinMenuHandler);
+		menu.SetTitle("生还者皮肤颜色\n——————————");
+
+		menu.AddItem("option0", "关闭\n ", player[client].SkinType == 0 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+		if((g_bl4dstatsSystemAvailable && (l4dstats_IsTopPlayer(client, 50) || (CheckCommandAccess(client, "", ADMFLAG_SLAY)))) || !g_bl4dstatsSystemAvailable)
+		{
+			menu.AddItem("option1", "绿色", player[client].SkinType == 1 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option2", "蓝色", player[client].SkinType == 2 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option3", "藍紫色", player[client].SkinType == 3 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option4", "青色", player[client].SkinType == 4 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option5", "橘黄色", player[client].SkinType == 5 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option6", "红色", player[client].SkinType == 6 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option7", "灰色", player[client].SkinType == 7 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option8", "黄色", player[client].SkinType == 8 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option9", "酸橙色", player[client].SkinType == 9 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option10", "栗色", player[client].SkinType == 10 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option11", "藍綠色", player[client].SkinType == 11 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option12", "粉红色", player[client].SkinType == 12 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			menu.AddItem("option13", "紫色", player[client].SkinType == 13 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			DumpAdminCache(AdminCache_Admins,true);
+			DumpAdminCache(AdminCache_Groups,true);
+			if((g_bl4dstatsSystemAvailable && l4dstats_IsTopPlayer(client,20)) || GetUserAdmin(client).ImmunityLevel == 100 || !g_bl4dstatsSystemAvailable)
+				menu.AddItem("option14", "黑色", player[client].SkinType == 14 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			if((g_bl4dstatsSystemAvailable && (l4dstats_IsTopPlayer(client,5) || GetUserAdmin(client).ImmunityLevel == 100)) || !g_bl4dstatsSystemAvailable)
+				menu.AddItem("option15", "金黄色", player[client].SkinType == 15 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			if((g_bl4dstatsSystemAvailable && (l4dstats_IsTopPlayer(client,3)) || GetUserAdmin(client).ImmunityLevel == 100) || !g_bl4dstatsSystemAvailable)
+				menu.AddItem("option16", "透明色", player[client].SkinType == 16 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			//个人定制皮肤部分
+			char steamid[32];
+			if (!TryGetRpgSteamId(client, steamid, sizeof(steamid)))
+				steamid[0] = '\0';
+			if(StrContains(steamid, "632322128", false) != -1 || StrContains(steamid, "121430603", false) != -1 ){
+				//760308896 定制
+				menu.AddItem("option17", "定制皮肤1", player[client].SkinType == 17 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+			if(StrContains(steamid, "888190443", false) != -1|| StrContains(steamid, "121430603", false) != -1 ){
+				//8894224 定制
+				menu.AddItem("option18", "定制皮肤2", player[client].SkinType == 18 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+			if(StrContains(steamid, "697994844", false) != -1|| StrContains(steamid, "121430603", false) != -1 ){
+				//2530533727 定制
+				menu.AddItem("option19", "定制皮肤3", player[client].SkinType == 19 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+			if(StrContains(steamid, "511614235", false) != -1|| StrContains(steamid, "121430603", false) != -1 ){
+				//2530533727 定制
+				menu.AddItem("option20", "定制皮肤4", player[client].SkinType == 20 ? ITEMDRAW_DISABLED : ITEMDRAW_DEFAULT);
+			}
+		}
+		menu.ExitButton = true;
+		menu.Display(client, MENU_TIME_FOREVER);
+	}
+}
+
+public int VIPSkinMenuHandler(Menu menu, MenuAction action, int param1, int param2) 
+{
+    switch (action) 
+    {
+        case MenuAction_End:
+            delete menu;
+        case MenuAction_Select: 
+        {
+            char option[64];
+            menu.GetItem(param2, option, sizeof(option));
+            //PrintToConsoleAll("%s", option);
+            char result[2][6];
+            ExplodeString(option, "option", result, 2, 6);
+            //PrintToConsoleAll("%s", result[1]);
+            GetSkin(param1, StringToInt(result[1], 10));
+            ClientSaveToFileSave(param1);
+            //SetCookie(param1, cookie, param2);
+			
+            Survivor_skin( param1 );
+        }
+    }
+
+    return 0;
+}
+
+void GetSkin(int client, int id, bool broadcast = true) 
+{
+    switch (id) 
+    {
+        case 0: 
+        {    
+            DisableSkin( client );
+            player[client].SkinType = id;
+            if(broadcast)
+                CPrintToChat(client, "%t", "RPG_ClosedSurvivorProfile");
+            return;
+        }
+        case 1: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 255, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_ChangeSkinColorGreen");
+        }
+        case 2: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 7, 19, 250, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorBlue");
+        }
+        case 3: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 249, 19, 250, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorBlueViolet");
+        }
+        case 4: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 66, 250, 250, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorCyan");
+        }
+        case 5: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 249, 155, 84, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorOrange");
+        }
+        case 6: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 255, 0, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorRed");
+        }
+        case 7: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 50, 50, 50, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorGray");
+        }
+        case 8: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 255, 255, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorYellow");
+        }
+        case 9: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 128, 255, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorLime");
+        }
+        case 10: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 128, 0, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorMaroon");
+        }
+        case 11: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 128, 128, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorTeal");
+        }
+        case 12:
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 255, 0, 150, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorPink");
+        }
+        case 13:
+        {        
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 155, 0, 255, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorPurple");
+        }
+        case 14: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 0, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorBlack");
+        }
+        case 15: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 255, 155, 0, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorGold");
+        }
+        case 16: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 0, 0, 30);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_ChangeSkinColorTransparentColor");
+        }
+		case 17:
+		{
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 139, 101, 8, 255);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorCustomSkin");
+		}
+		case 18:
+		{
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 0, 0, 60);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorCustomSkin");
+		}
+		case 19: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 0, 0, 60);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorCustomSkin");
+        }
+		case 20: 
+        {
+            SetEntityRenderMode(client, RENDER_GLOW);
+            SetEntityRenderColor(client, 0, 0, 0, 60);
+            if(broadcast)
+            	CPrintToChat(client, "%t", "RPG_SetSkinColorCustomSkin");
+        }
+    }
+    
+    player[client].SkinType = id;
+    
+}
+
+void DisableSkin( int client )
+{
+	if( IsValidClient( client ))
+	{		
+		SetEntityRenderMode(client, RENDER_NORMAL);
+		SetEntityRenderColor(client, 255, 255, 255, 255);
+	}
+}
+
+//创建购买菜单>>主菜单--称号菜单
+public void ChatTags(int client)
+{
+	//ClientCommand(client,"Cmd_ReloadTags");
+	//ApplyTags(client,0);
+	ClientCommand(client,"sm_ch");	
+}
+
+//创建购买菜单>>主菜单--帽子菜单
+public void Hat(int client)
+{
+	ClientCommand(client,"sm_hats");	
+}
+
+//创建购买菜单>>主菜单--伤害显示菜单
+public void Damage(int client)
+{
+	ClientCommand(client,"sm_dmgmenu");	
+}
+
+//创建购买菜单>>主菜单--伤害显示菜单
+public void HitSound(int client)
+{
+	ClientCommand(client,"sm_snd");	
+}
+
+//创建购买菜单>>主菜单--物品光束菜单
+public void BeamItem(int client)
+{
+	ClientCommand(client,"sm_beam");
+}
+
+//创建购买菜单>>主菜单--主武器类型
+public void gun(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[64];
+		Menu menu = new Menu(gun_back);
+		menu.SetTitle("当前B数：%i \n——————————",player[client].ClientPoints);
+		
+		FormatEx(binfo, sizeof(binfo),  "子弹 %dB数",CostAmmo, client);
+		menu.AddItem("ammo", binfo);
+		
+		if(player[client].ClientFirstBuy){
+			FormatEx(binfo, sizeof(binfo), "马格南 %dB数",0, client);
+			menu.AddItem("pistol_magnum", binfo);
+			FormatEx(binfo, sizeof(binfo), "Uzi %dB数",0, client);
+			menu.AddItem("smg", binfo);
+
+			FormatEx(binfo, sizeof(binfo), "消音smg %dB数",0,client);
+			menu.AddItem("smg_silenced", binfo);
+		
+			FormatEx(binfo, sizeof(binfo), "一代单发霰弹枪 %dB数",0, client);
+			menu.AddItem("pumpshotgun", binfo);
+
+			FormatEx(binfo, sizeof(binfo), "二代单发霰弹枪 %dB数",0, client);
+			menu.AddItem("shotgun_chrome", binfo);
+			
+			FormatEx(binfo, sizeof(binfo), "普通小手枪 %dB数",0, client);
+			menu.AddItem("pistol", binfo);
+		}else{
+			FormatEx(binfo, sizeof(binfo), "马格南 %dB数",CostMagnum, client);
+			menu.AddItem("pistol_magnum", binfo);
+			FormatEx(binfo, sizeof(binfo),  "Uzi %dB数",CostUzi, client);
+			menu.AddItem("smg", binfo);
+
+			FormatEx(binfo, sizeof(binfo), "消音smg %dB数",CostSilenced,client);
+			menu.AddItem("smg_silenced", binfo);
+		
+			FormatEx(binfo, sizeof(binfo),  "一代单发霰弹枪 %dB数",CostPumpShotgun, client);
+			menu.AddItem("pumpshotgun", binfo);
+
+			FormatEx(binfo, sizeof(binfo),  "二代单发霰弹枪 %dB数",CostPumpShotgun, client);
+			menu.AddItem("shotgun_chrome", binfo);
+			
+			FormatEx(binfo, sizeof(binfo),"普通小手枪 %dB数",CostP220, client);
+			menu.AddItem("pistol", binfo);
+		}
+		
+		FormatEx(binfo, sizeof(binfo),  "mp5机枪 %dB数",CostMP5, client);
+		menu.AddItem("smg_mp5", binfo);
+		
+		if(!IsAllowBigGun)
+		{
+			menu.Display(client, 20);
+			return;
+		}
+		
+		FormatEx(binfo, sizeof(binfo),  "一代连发霰弹枪 %dB数",CostAuto, client);
+		menu.AddItem("autoshotgun", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "二代连发霰弹枪 %dB数",CostAuto, client);
+		menu.AddItem("shotgun_spas", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "m16步枪 %dB数",CostM16, client);
+		menu.AddItem("rifle", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "ak47步枪 %dB数",CostAK47, client);
+		menu.AddItem("rifle_ak47", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "sg552步枪 %dB数",CostSG552, client);
+		menu.AddItem("rifle_sg552", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "scar步枪 %dB数",CostSCAR, client);
+		menu.AddItem("rifle_desert", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "一代连狙 %dB数",CostHunting, client);
+		menu.AddItem("hunting_rifle", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "二代连狙 %dB数",CostMilitary, client);
+		menu.AddItem("sniper_military", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "鸟狙 %dB数",CostScout, client);
+		menu.AddItem("sniper_scout", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "AWP狙击枪 %dB数",CostAWP, client);
+		menu.AddItem("sniper_awp", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "m60 %dB数",CostM60, client);
+		menu.AddItem("rifle_m60", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "榴弹发射器 %dB数",CostGrenadeLuanch, client);
+		menu.AddItem("grenade_launcher", binfo);
+		
+		menu.Display(client, 20);
+	}
+}
+
+
+
+public int gun_back(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch(action)
+	{
+		case MenuAction_Select:
+		{
+			if (!CanUseShop(param1)) return 0;
+
+			char bitem[64];
+			menu.GetItem(param2, bitem, sizeof(bitem));
+			if( StrEqual(bitem, "smg") )
+			{
+				int costpoints = CostUzi;
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "Uzi", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostUzi, "Uzi", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "smg_silenced") )
+			{
+				
+				int costpoints = CostSilenced;
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "消音smg", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostSilenced, "消音smg", player[param1].ClientPoints);
+			}				
+			else if( StrEqual(bitem, "smg_mp5") )
+			{
+				
+				int costpoints = CostMP5;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostMP5, "mp5", player[param1].ClientPoints);
+			}	
+			else if( StrEqual(bitem, "rifle") ){
+				//
+				int costpoints = CostM16;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostM16, "m16步枪", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "rifle_ak47") ){
+				int costpoints = CostAK47;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostAK47, "ak47步枪", player[param1].ClientPoints);
+			}
+				
+			else if( StrEqual(bitem, "rifle_sg552") ){
+				int costpoints = CostSG552;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostSG552, "sg552步枪", player[param1].ClientPoints);
+			}
+				
+			else if( StrEqual(bitem, "rifle_desert") ){
+				int costpoints = CostSCAR;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostSCAR, "scar步枪", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "pumpshotgun") ){
+				int costpoints = CostPumpShotgun;
+				
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "一代单喷", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostPumpShotgun, "一代单喷", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "shotgun_chrome") ){
+				int costpoints = CostChromeShotgun;
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "二代单喷", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostChromeShotgun, "二代单喷", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "autoshotgun") ){
+				int costpoints = CostAuto;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostAuto, "一代连喷", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "shotgun_spas") ){
+				int costpoints = CostSPAS;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostSPAS, "二代连喷", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "hunting_rifle") ){
+				int costpoints = CostHunting;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostHunting, "一代连狙", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "sniper_military") ){
+				int costpoints = CostMilitary;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostMilitary, "二代连狙", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "sniper_scout") ){
+				int costpoints = CostScout;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostScout, "鸟狙", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "sniper_awp") ){
+				int costpoints = CostAWP;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostAWP, "AWP狙击枪", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "rifle_m60") ){
+				int costpoints = CostM60;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostM60, "m60", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "grenade_launcher") ){
+				int costpoints = CostGrenadeLuanch;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostGrenadeLuanch, "榴弹发射器", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "pistol") ){			
+				int costpoints = CostP220;
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "小手枪", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostP220, "小手枪", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "pistol_magnum") ){
+				
+				int costpoints = CostMagnum;
+				if(player[param1].ClientFirstBuy){
+					player[param1].ClientFirstBuy=false;
+					RemovePoints(param1, 0, bitem);
+					CPrintToChatAll("%t", "RPG_FirstFreePurchase", param1, "马格南", player[param1].ClientPoints);
+				}
+				else if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostMagnum, "马格南", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "ammo") ){
+				ClientCommand(param1, "sm_ammo");
+			}
+		}
+		case MenuAction_End:
+			delete menu;
+	}
+	return 0;
+}
+
+
+//创建购买菜单>>主菜单--医疗物品/药品
+public void supply(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[64];
+		Menu menu = new Menu(supply_back);
+		menu.SetTitle("医疗物品\n——————————");
+
+		FormatEx(binfo, sizeof(binfo),  "药丸 %dB数",CostPills, client);
+		menu.AddItem("pain_pills", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "肾上腺素 %dB数",CostAdren, client);
+		menu.AddItem("adrenaline", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "医疗包 %dB数",CostFirstAidKit,client);
+		menu.AddItem("first_aid_kit", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "油桶 %dB数",CostGascan, client);
+		menu.AddItem("gascan", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "治疗小侏儒 %dB数",CostGnome, client);
+		menu.AddItem("weapon_gnome", binfo);
+
+		menu.Display(client, 20);
+	}
+}
+public int supply_back(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch(action)
+	{
+		case MenuAction_Select:
+		{
+			if (!CanUseShop(param1)) return 0;
+
+			char bitem[64];
+			menu.GetItem(param2, bitem, sizeof(bitem));
+			if( StrEqual(bitem, "first_aid_kit") ){				
+				int costpoints = CostFirstAidKit;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostFirstAidKit, "医疗包", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "pain_pills") ){				
+				int costpoints = CostPills;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostPills, "药丸", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "adrenaline") ){				
+				int costpoints = CostAdren;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostAdren, "肾上腺素", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "gascan") ){
+				
+				int costpoints = CostGascan;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostGascan, "油桶", player[param1].ClientPoints);
+			}
+			else if( StrEqual(bitem, "weapon_gnome") ){
+				
+				int costpoints = CostGnome;
+				if(RemovePoints(param1, costpoints, bitem))
+				CPrintToChatAll("%t", "RPG_BoughtItemWithPoints", param1, CostGnome, "治疗小侏儒", player[param1].ClientPoints);
+			}
+		}
+		case MenuAction_End:
+			delete menu;
+	}
+	return 0;
+}
+//创建购买菜单>>主菜单--技能界面
+public void ability(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[64];
+		Menu menu = new Menu(ability_back);
+		menu.SetTitle("选择出门近战,当前为%d\n——————————",player[client].ClientMelee);
+		
+		FormatEx(binfo, sizeof(binfo),  "砍刀", client);
+		menu.AddItem("machete", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "消防斧", client);
+		menu.AddItem("fireaxe", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "小刀", client);
+		menu.AddItem("knife", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "武士刀", client);
+		menu.AddItem("katana", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "马格南", client);
+		menu.AddItem("pistol_magnum", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "电吉他", client);
+		menu.AddItem("electric_guitar", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "警棍", client);
+		menu.AddItem("tonfa", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "草叉", client);
+		menu.AddItem("pitchfork", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "铲子", client);
+		menu.AddItem("shovel", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "普通小手枪", client);
+		menu.AddItem("pistol", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "平底锅", client);
+		menu.AddItem("frying_pan", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "撬棍", client);
+		menu.AddItem("crowbar", binfo);
+		
+		FormatEx(binfo, sizeof(binfo),  "板球拍", client);
+		menu.AddItem("cricket_bat", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "随机近战", client);
+		menu.AddItem("random_secondweapon", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "取消设置", client);
+		menu.AddItem("none", binfo);
+
+		menu.Display(client, 20);
+	}
+}
+public int ability_back(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch(action)
+	{
+		case MenuAction_Select:
+		{
+			if (!CanUseShop(param1)) return 0;
+
+			char bitem[64];
+			menu.GetItem(param2, bitem, sizeof(bitem));
+			if( StrEqual(bitem, "machete") ){		
+				player[param1].ClientMelee=1;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_MeleeWeaponSetMacheteGo");
+			}
+			else if( StrEqual(bitem, "fireaxe") ){
+				player[param1].ClientMelee=2;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_MeleeWeaponSetFireAx");
+			}
+			else if( StrEqual(bitem, "knife") ){
+				player[param1].ClientMelee=3;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponKnifeGo");
+			}
+			else if( StrEqual(bitem, "katana") ){
+				player[param1].ClientMelee=4;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_MeleeWeaponSetKatana");
+			}
+			else if( StrEqual(bitem, "pistol_magnum") ){
+				player[param1].ClientMelee=5;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_MeleeWeaponSetMagnum");
+			}
+			else if( StrEqual(bitem, "electric_guitar") ){
+				player[param1].ClientMelee=6;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponGoingElectric");
+			}
+			else if( StrEqual(bitem, "tonfa") ){
+				player[param1].ClientMelee=7;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponGoingBaton");
+			}
+			else if( StrEqual(bitem, "pitchfork") ){
+				player[param1].ClientMelee=8;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetOutgoingMeleeWeaponPitchfork");
+			}
+			else if( StrEqual(bitem, "shovel") ){
+				player[param1].ClientMelee=9;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetExitMeleeWeaponShovel");
+			}
+			else if( StrEqual(bitem, "pistol") ){
+				player[param1].ClientMelee=10;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponGoingSmall");
+			}else if( StrEqual(bitem, "frying_pan") ){
+				player[param1].ClientMelee=11;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetExitMeleeWeaponPan");
+			}else if( StrEqual(bitem, "crowbar") ){
+				player[param1].ClientMelee=12;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponGoingCrowbar");
+			}else if( StrEqual(bitem, "cricket_bat") ){
+				player[param1].ClientMelee=13;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponCricketBat");
+			}else if( StrEqual(bitem, "random_secondweapon") ){
+				player[param1].ClientMelee=14;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_SetMeleeWeaponCricketBat");
+			}else if( StrEqual(bitem, "none") ){
+				player[param1].ClientMelee = 0;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_CanceledMeleeWeaponGoing");
+			}else 
+			{
+				CPrintToChat(param1, "%t", "RPG_MeleeWeaponSettingFailedExceeded");
+			}
+		}
+		case MenuAction_End:
+			delete menu;
+	}
+	return 0;
+}
+//创建购买菜单>>主菜单--技能界面
+public void Blood(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[64];
+		Menu menu = new Menu(Blood_back);
+		if(player[client].ClientBlood)
+			menu.SetTitle("是否开启杀特回血,当前状态：是\n——————————");
+		else
+			menu.SetTitle("是否开启杀特回血,当前状态：否\n——————————");
+		FormatEx(binfo, sizeof(binfo),  "是", client);
+		menu.AddItem("Yes", binfo);
+
+		FormatEx(binfo, sizeof(binfo),  "否", client);
+		menu.AddItem("No", binfo);
+		menu.Display(client, 20);
+	}
+}
+
+public int Blood_back(Menu menu, MenuAction action, int param1, int param2)
+{
+	switch(action)
+	{
+		case MenuAction_Select:
+		{
+			char bitem[64];
+			menu.GetItem(param2, bitem, sizeof(bitem));
+			if( StrEqual(bitem, "Yes") ){
+				
+				player[param1].ClientBlood=1;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_TurnedBloodRecoveryFunctionKilling");
+			}
+			else {				
+				player[param1].ClientBlood=0;
+				ClientSaveToFileSave(param1);
+				CPrintToChat(param1, "%t", "RPG_TurnedOffBloodRecoverySpecial");
+			}
+		}
+		case MenuAction_End:
+			delete menu;
+	}
+	return 0;
+}
+
+
+//创建购买菜单>>主菜单--技能界面
+public void Recoil(int client)
+{
+	if( IsVaildClient(client) )
+	{
+		char binfo[64];
+		Menu menu = new Menu(Recoil_back);
+		if (player[client].ClientRecoil)
+		menu.SetTitle("是否开启防抖动（去除枪械抖动），当前状态：是\n——————————");
+	else
+		menu.SetTitle("是否开启防抖动（去除枪械抖动），当前状态：否\n——————————");
+
+		FormatEx(binfo, sizeof(binfo),  "是", client);
+		menu.AddItem("Yes", binfo);
+		FormatEx(binfo, sizeof(binfo),  "否", client);
+		menu.AddItem("No", binfo);
+		menu.Display(client, 20);
+	}
+}
+
+public int Recoil_back(Menu menu, MenuAction action, int param1, int param2)
+{
+    switch (action)
+    {
+        case MenuAction_Select:
+        {
+            char bitem[64];
+            menu.GetItem(param2, bitem, sizeof(bitem));
+
+            // Yes = 不抖动(去抖) → sm_recoil 1
+            // No  = 抖动(原版)   → sm_recoil 0
+            int want = StrEqual(bitem, "Yes") ? 1 : 0;
+
+            // 1) 立即更新本地值并写库，保证数据库与面板显示一致
+            player[param1].ClientRecoil = want; 
+            ClientSaveToFileSave(param1);
+
+            // 3) **下一帧**再执行命令，避免在菜单回调里直接 FakeClientCommand 失效的情况
+            DataPack pack = new DataPack();
+            pack.WriteCell(GetClientUserId(param1)); // 保存 userid，避免玩家刚好重连导致 index 变动
+            pack.WriteCell(want);
+            RequestFrame(Exec_RecoilCmdNextFrame, pack);
+        }
+
+        case MenuAction_End:
+            delete menu;
+    }
+    return 0;
+}
+
+// 在下一帧执行命令
+public void Exec_RecoilCmdNextFrame(DataPack pack)
+{
+    pack.Reset();
+    int userid = pack.ReadCell();
+    int want   = pack.ReadCell();
+    delete pack;
+
+    int client = GetClientOfUserId(userid);
+    if (client <= 0 || !IsClientInGame(client))
+        return;
+
+    // 4) 触发 punch 插件的命令：!recoil 1=不抖动，0=抖动
+    //    建议用 FakeClientCommandEx 以便拿到返回值（若你的 SM 版本支持）
+    FakeClientCommand(client, "sm_recoil %d", want);
+}
+
+
+stock bool IsAboveFourPeople()
+{
+	ConVar survivorManager = FindConVar("l4d_multislots_survivors_manager_enable");
+	if( survivorManager == null)
+	{
+		return false;
+	}
+	else
+	{
+		if(survivorManager.BoolValue)
+		{
+			return true;
+		}else
+		{
+			return false;
+		}
+	}
+}
+stock int getSurvivorNum()
+{
+	int count = 0;
+	for(int i = 1; i <= MaxClients; i++)
+	{
+		if(IsClientConnected(i) && IsClientInGame(i) && GetClientTeam(i) == 2)
+		{
+			count ++;
+		}
+	}
+	return count;
+}
+stock bool IsGaoJiRenJiEnabled()
+{
+	ConVar gjrj = FindConVar("sb_fix_enabled");
+	if(gjrj == null)
+	{
+		return false;
+	}
+	else if(gjrj.BoolValue)
+	{
+		return true;
+	}
+	return false;
+}
+// 这回合是否有效
+stock bool IsThisRoundValid()
+{
+	ConVar tank_bhop = FindConVar("ai_Tank_Bhop");
+	if(AnneMultiPlayerMode())
+	{
+		return tank_bhop.BoolValue;
+	}
+	return true;
+}
+
+stock bool AnneMultiPlayerMode(){
+	char plugin_name[MAX_LINE_WIDTH];
+	ConVar cvar_mode;
+	if(cvar_mode == null && FindConVar("l4d_ready_cfg_name"))
+	{
+		cvar_mode = FindConVar("l4d_ready_cfg_name");
+	}
+	if(cvar_mode == null) return false;
+	GetConVarString(cvar_mode, plugin_name, sizeof(plugin_name));
+	if(StrContains(plugin_name, "AllCharger", false) != -1 || StrContains(plugin_name, "AnneHappy", false) != -1 || StrContains(plugin_name, "WitchParty", false) != -1)
+	{
+		return true;
+	}else
+	{
+		return false;
+	}
+}
+
+public Action OnCallVote(int client, const char[] command, int argc)
+{
+    if (client <= 0 || !IsClientInGame(client)) return Plugin_Continue;
+    if (!g_hAntiKickEnable.BoolValue || !g_hAntiKickBlockVote.BoolValue) return Plugin_Continue;
+
+    // 语法: callvote Kick <#userid|name>  （其他议题不拦）
+    char issue[32]; GetCmdArg(1, issue, sizeof(issue));
+    if (!StrEqual(issue, "Kick", false)) return Plugin_Continue;
+
+    char targetArg[64]; GetCmdArg(2, targetArg, sizeof(targetArg));
+    if (targetArg[0] == '\0') return Plugin_Continue;
+
+    int target = ResolveSingleTarget(targetArg);
+    if (target <= 0) return Plugin_Continue;
+
+    if (IsAdminProtected(target))
+    {
+        char tname[64], cname[64];
+        GetClientName(target, tname, sizeof(tname));
+        GetClientName(client, cname, sizeof(cname));
+
+        CPrintToChat(client, "%t", "RPG_AntiKickPlayerAdministratorAnti", target);
+        PrintToServer("[AntiKick] %s attempted votekick on admin %s, blocked.", cname, tname);
+        return Plugin_Handled;   // 直接拦截投票
+    }
+
+    return Plugin_Continue;
+}
+
+public Action OnSmKick(int client, const char[] command, int argc)
+{
+    // 控制台/服务器执行不拦（通常用于管理）
+    if (client == 0) return Plugin_Continue;
+    if (!IsClientInGame(client)) return Plugin_Continue;
+    if (!g_hAntiKickEnable.BoolValue || !g_hAntiKickBlockCmdKick.BoolValue) return Plugin_Continue;
+
+    // 语法: sm_kick <#userid|name> [reason...]
+    char targetArg[64]; GetCmdArg(1, targetArg, sizeof(targetArg));
+    if (targetArg[0] == '\0') return Plugin_Continue;
+
+    int target = ResolveSingleTarget(targetArg);
+    if (target <= 0) return Plugin_Continue;
+
+    if (!IsAdminProtected(target)) return Plugin_Continue;
+
+    int callerImm = GetClientImmunityLevel(client);
+    int targetImm = GetClientImmunityLevel(target);
+    bool equalBlock = g_hAntiKickEqualBlock.BoolValue;
+
+    // 规则：低级 < 高级 => 禁止；同级 && equalBlock => 禁止
+    if (callerImm < targetImm || (callerImm == targetImm && equalBlock))
+    {
+        char tname[64];
+        GetClientName(target, tname, sizeof(tname));
+        CPrintToChat(client, "%t", "RPG_AntiKickNotPermissionKick", target);
+        return Plugin_Handled;
+    }
+
+    // 更高免疫管理员可以踢（尊重免疫层级）
+    return Plugin_Continue;
+}

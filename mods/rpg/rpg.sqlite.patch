@@ -1,0 +1,131 @@
+--- a/addons/sourcemod/scripting/extend/rpg.sp
++++ b/addons/sourcemod/scripting/extend/rpg.sp
+@@ -33,6 +33,7 @@
+ bool g_bLateLoad = false;
+ bool g_bGuidePreferenceColumnAvailable = false;
+ bool g_bHatPrefColumnAvailable = false;
++bool g_bSqliteDriver = false;
+ enum struct PlayerStruct{
+ 	int ClientPoints;
+ 	int ClientBlood;
+@@ -1335,6 +1336,44 @@
+ }
+ 
+ // allowBlock=false 用在游戏过程中的按需重连：共享连接未就绪时不在主线程阻塞。
++bool DetectSqliteDriver()
++{
++	char path[PLATFORM_MAX_PATH];
++	BuildPath(Path_SM, path, sizeof(path), "configs/databases.cfg");
++	KeyValues kv = new KeyValues("Databases");
++	if (!kv.ImportFromFile(path))
++	{
++		delete kv;
++		return false;
++	}
++	char def[32];
++	kv.GetString("driver_default", def, sizeof(def), "mysql");
++	bool sqlite = false;
++	if (kv.JumpToKey(DB_CONF_NAME))
++	{
++		char driver[32];
++		kv.GetString("driver", driver, sizeof(driver), "default");
++		if (StrEqual(driver, "default", false))
++		{
++			strcopy(driver, sizeof(driver), def);
++		}
++		sqlite = StrEqual(driver, "sqlite", false);
++	}
++	delete kv;
++	return sqlite;
++}
++
++void EnsureRpgSqliteTable()
++{
++	char error[256];
++	if (!AnneDB_LockedFastQuery(db,
++		"CREATE TABLE IF NOT EXISTS RPG (steamid TEXT NOT NULL PRIMARY KEY,MELEE_DATA INTEGER NOT NULL DEFAULT 0,BLOOD_DATA INTEGER NOT NULL DEFAULT 0,HAT INTEGER NOT NULL DEFAULT 0,HAT_ENABLED INTEGER DEFAULT NULL,HAT_VIEW_FIRST INTEGER DEFAULT NULL,HAT_VIEW_THIRD INTEGER DEFAULT NULL,HAT_SHOW_OTHERS INTEGER DEFAULT NULL,GLOW INTEGER NOT NULL DEFAULT 0,SKIN INTEGER NOT NULL DEFAULT 0,RECOIL INTEGER NOT NULL DEFAULT 0,ANNE_GUIDE_PROMPT INTEGER NOT NULL DEFAULT 1,CHATTAG TEXT DEFAULT NULL,hitsound_cfg INTEGER NOT NULL DEFAULT 0,hitsound_overlay INTEGER NOT NULL DEFAULT 0,hitsound_head INTEGER NOT NULL DEFAULT 0,hitsound_hit INTEGER NOT NULL DEFAULT 0,hitsound_kill INTEGER NOT NULL DEFAULT 0,hiticon_head INTEGER NOT NULL DEFAULT 0,hiticon_hit INTEGER NOT NULL DEFAULT 0,hiticon_kill INTEGER NOT NULL DEFAULT 0,hitsound_si_only INTEGER NOT NULL DEFAULT 0,hiticon_si_only INTEGER NOT NULL DEFAULT 0,hitsound_stack_mode INTEGER DEFAULT NULL,hitsound_headkill INTEGER DEFAULT NULL,hitsound_lethal_mode INTEGER DEFAULT NULL)",
++		error, sizeof(error)))
++	{
++		LogError("[RPG] Failed to ensure SQLite table: %s", error);
++	}
++}
++
+ bool ConnectDB(bool allowBlock = true)
+ {
+ 	if (db != INVALID_HANDLE)
+@@ -1345,6 +1384,7 @@
+ 
+ 	if (SQL_CheckConfig(DB_CONF_NAME))
+ 	{
++		g_bSqliteDriver = DetectSqliteDriver();
+ 		char Error[256];
+ 		db = AnneDB_ConnectSyncCompat(DB_CONF_NAME, Error, sizeof(Error), AnneDBLane_Shared, allowBlock);
+ 		if (db == INVALID_HANDLE)
+@@ -1353,7 +1393,7 @@
+ 			g_bMysqlSystemAvailable = false;
+ 			return false;
+ 		}
+-		else if (!AnneDB_SetCharsetIfOwned(db,"utf8mb4"))
++		else if (!g_bSqliteDriver && !AnneDB_SetCharsetIfOwned(db,"utf8mb4"))
+ 		{
+ 			if (SQL_GetError(db, Error, sizeof(Error)))
+ 				LogError("Failed to update encoding to utf8mb4: %s", Error);
+@@ -1364,6 +1404,10 @@
+ 			return false;
+ 		}
+ 
++		if (g_bSqliteDriver)
++		{
++			EnsureRpgSqliteTable();
++		}
+ 		g_bGuidePreferenceColumnAvailable = EnsureAnneGuidePromptColumn();
+ 		if (!g_bGuidePreferenceColumnAvailable)
+ 		{
+@@ -1395,7 +1439,12 @@
+ 	}
+ 
+ 	char error[256];
+-	Handle result = AnneDB_LockedQuery(db, "SHOW COLUMNS FROM `RPG` LIKE 'ANNE_GUIDE_PROMPT'", error, sizeof(error));
++	char inspectSql[192];
++	if (g_bSqliteDriver)
++		strcopy(inspectSql, sizeof(inspectSql), "SELECT name FROM pragma_table_info('RPG') WHERE name='ANNE_GUIDE_PROMPT'");
++	else
++		strcopy(inspectSql, sizeof(inspectSql), "SHOW COLUMNS FROM `RPG` LIKE 'ANNE_GUIDE_PROMPT'");
++	Handle result = AnneDB_LockedQuery(db, inspectSql, error, sizeof(error));
+ 	if (result == INVALID_HANDLE || result == null)
+ 	{
+ 		LogError("[RPG] Failed to inspect ANNE_GUIDE_PROMPT: %s", error);
+@@ -1409,7 +1458,20 @@
+ 		return true;
+ 	}
+ 
+-	if (!AnneDB_LockedFastQuery(db, "ALTER TABLE `RPG` ADD COLUMN `ANNE_GUIDE_PROMPT` TINYINT NOT NULL DEFAULT 1 AFTER `RECOIL`", error, sizeof(error)))
++	char alterSql[512];
++	if (g_bSqliteDriver)
++		strcopy(alterSql, sizeof(alterSql), "ALTER TABLE `RPG` ADD COLUMN `ANNE_GUIDE_PROMPT` INTEGER NOT NULL DEFAULT 1");
++	else
++		strcopy(alterSql, sizeof(alterSql), "ALTER TABLE `RPG` ADD COLUMN `ANNE_GUIDE_PROMPT` TINYINT NOT NULL DEFAULT 1 AFTER `RECOIL`");
++	char useAlter[512];
++	strcopy(useAlter, sizeof(useAlter), alterSql);
++	if (g_bSqliteDriver)
++	{
++		int afterPos = StrContains(useAlter, " AFTER ", false);
++		if (afterPos != -1)
++			useAlter[afterPos] = '\0';
++	}
++	if (!AnneDB_LockedFastQuery(db, useAlter, error, sizeof(error)))
+ 	{
+ 		LogError("[RPG] Failed to add ANNE_GUIDE_PROMPT: %s", error);
+ 		return false;
+@@ -1426,7 +1488,10 @@
+ 	}
+ 
+ 	char inspect[192];
+-	FormatEx(inspect, sizeof(inspect), "SHOW COLUMNS FROM `RPG` LIKE '%s'", column);
++	if (g_bSqliteDriver)
++		FormatEx(inspect, sizeof(inspect), "SELECT name FROM pragma_table_info('RPG') WHERE name='%s'", column);
++	else
++		FormatEx(inspect, sizeof(inspect), "SHOW COLUMNS FROM `RPG` LIKE '%s'", column);
+ 	char error[256];
+ 	Handle result = AnneDB_LockedQuery(db, inspect, error, sizeof(error));
+ 	if (result == INVALID_HANDLE || result == null)

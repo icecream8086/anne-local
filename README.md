@@ -12,6 +12,7 @@ L4D2 Anne 服务端的**构建仓**：固定上游 release，只加一个必须�
 VERSIONS.lock           # 上游 tag / 资产名 / sha256
 base/                   # 所有部署都成立的修复
 └── patches/            #   rcon_password ""（上游默认密码是公开字符串）
+mods/rpg/               # 我们对上游插件的修改：RPG 改本地 SQLite（源码/补丁/smx/建表）
 build.sh                # 拉包 → base 补丁 → 打包（仅 Linux）
 tools/make-patches.sh   # 从现有游戏树重生成补丁
 .github/workflows/build.yml

@@ -121,12 +121,20 @@ grep -qE '^rcon_password ""' "$BUILD/left4dead2/cfg/server.cfg" \
 
 if [ "$PROFILE" = "lan" ]; then
   [ -f "$root_ds" ] && ok "dirspawn 1.6.3 存在" || bad "dirspawn overlay 缺失"
+  [ -f "$BUILD/left4dead2/addons/sourcemod/plugins/extend/rpg.smx" ] \
+    && ok "rpg.smx 已加入" || bad "rpg.smx 缺失"
+  [ -f "$BUILD/left4dead2/addons/sourcemod/plugins/extend/anne_db.smx" ] \
+    && ok "anne_db.smx 已加入" || bad "anne_db.smx 缺失"
+  grep -qE '^sm plugins load extend/rpg\.smx' "$BUILD/left4dead2/cfg/sharedplugins.cfg" \
+    && ok "rpg 加载行已启用" || bad "rpg 加载行仍是注释"
+  grep -qE '^sm plugins load extend/anne_db\.smx' "$BUILD/left4dead2/cfg/generalfixes.cfg" \
+    && ok "anne_db 加载行已启用" || bad "anne_db 加载行仍是注释"
+  grep -A3 '^\s*"rpg"' "$BUILD/left4dead2/addons/sourcemod/configs/databases.cfg" | grep -q '"sqlite"' \
+    && ok "rpg 数据库为 sqlite" || bad "rpg 数据库不是 sqlite"
   cnt=$(grep -rl 'confogl_addcvar join_autoupdate 0' "$BUILD/left4dead2/cfg/cfgogl" 2>/dev/null | wc -l)
   [ "$cnt" -ge 9 ] && ok "join_autoupdate=0 覆盖 $cnt 个模式" || bad "join_autoupdate=0 只覆盖 $cnt 个模式"
-  grep -qE '^sm plugins load extend/anne_db' "$BUILD/left4dead2/cfg/generalfixes.cfg" \
-    && bad "anne_db 仍在加载" || ok "anne_db 未加载"
-  grep -qE '^sm plugins load extend/(rpg|savechat|updater)\.smx' "$BUILD/left4dead2/cfg/sharedplugins.cfg" \
-    && bad "rpg/savechat/updater 仍在加载" || ok "rpg/savechat/updater 未加载"
+  grep -qE '^sm plugins load extend/(savechat|updater)\.smx' "$BUILD/left4dead2/cfg/sharedplugins.cfg" \
+    && bad "savechat/updater 仍在加载" || ok "savechat/updater 未加载"
   grep -q 'anne.trygek.com/accelerator' "$BUILD/left4dead2/addons/sourcemod/configs/core.cfg" \
     && bad "崩溃上报 URL 未清空" || ok "崩溃上报已关闭"
   [ -f "$BUILD/left4dead2/addons/sourcemod/extensions/dbi.mysql.ext.so" ] \
